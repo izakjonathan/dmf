@@ -70,12 +70,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 export function Brand() {
   return (
     <a className="brand" href="/">
-      <span className="mark" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-      </span>
-      stagebook<span>.</span>
+      Stagebook
     </a>
   );
 }
@@ -186,110 +181,125 @@ export default function Dashboard() {
   }
   if (mode !== "app" && !demo)
     return (
-      <main className="gate">
-        <header>
-          <Brand />
-          <button
-            className="secondary"
-            onClick={() => {
-              setDemo(true);
-              setError("");
-            }}
-          >
-            Explore demo
-          </button>
-        </header>
-        <h1>Musician payments</h1>
-        <p className="lead">
-          Collect musician details, record payments and keep everything in your
-          Google Sheet.
-        </p>
-        {error && (
-          <p className="error" role="alert">
-            {error}
+      <main className="gate sign-in">
+        <div className="gate-inner">
+          <header>
+            <Brand />
+            <button
+              className="text-action"
+              onClick={() => {
+                setDemo(true);
+                setError("");
+              }}
+            >
+              Explore demo
+            </button>
+          </header>
+          <h1>
+            Musician
+            <br />
+            payments.
+          </h1>
+          <p className="lead">
+            Collect musician details, record payments and keep everything in
+            your Google Sheet.
           </p>
-        )}
-        {mode === "loading" ? (
-          <p>Opening workspace…</p>
-        ) : mode === "connect" ? (
-          <section className="panel guide">
-            <h2>Connect your Google Sheet</h2>
-            <ol>
-              <li>
-                Create a private Google Sheet. Open{" "}
-                <strong>Extensions → Apps Script</strong> and paste the{" "}
-                <a href="/Code.gs" download>
-                  integration code
-                </a>
-                .
-              </li>
-              <li>
-                In Apps Script, add <strong>Google Sheets API</strong> under
-                Services. Run <strong>initialize</strong> and authorize the
-                script. In <strong>Project Settings → Script properties</strong>,
-                copy the value of <code>API_SECRET</code>.
-              </li>
-              <li>
-                Deploy a web app that runs as you and accepts requests from{" "}
-                <strong>Anyone</strong>. The script checks the signature on
-                every request.
-              </li>
-              <li>
-                Set <code>GOOGLE_SCRIPT_URL</code> to the web app’s{" "}
-                <code>/exec</code> URL and <code>GOOGLE_SCRIPT_SECRET</code> to
-                its secret in the{" "}
-                <a
-                  href="https://vercel.com/izakh-s-projects/dmf/settings/environment-variables"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Vercel project
-                </a>
-                . Add <code>GOOGLE_SPREADSHEET_ID</code> for the workbook link.
-                Redeploy.
-              </li>
-            </ol>
-            <button onClick={() => void start()}>Check connection</button>
-          </section>
-        ) : (
-          <form className="panel auth" onSubmit={signIn}>
-            <h2>
-              {mode === "setup" ? "Create your administrator login" : "Sign in"}
-            </h2>
-            <Field label="Email">
-              <input name="email" type="email" required autoComplete="email" />
-            </Field>
-            <Field label="Password">
-              <input
-                name="password"
-                type="password"
-                required
-                minLength={12}
-                autoComplete={
-                  mode === "setup" ? "new-password" : "current-password"
-                }
-              />
-            </Field>
-            {mode === "setup" && (
-              <Field label="Administrator setup key">
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+          {mode === "loading" ? (
+            <p>Opening workspace…</p>
+          ) : mode === "connect" ? (
+            <section className="panel guide">
+              <h2>Connect your Google Sheet</h2>
+              <ol>
+                <li>
+                  Create a private Google Sheet. Open{" "}
+                  <strong>Extensions → Apps Script</strong> and paste the{" "}
+                  <a href="/Code.gs" download>
+                    integration code
+                  </a>
+                  .
+                </li>
+                <li>
+                  In Apps Script, add <strong>Google Sheets API</strong> under
+                  Services. Run <strong>initialize</strong> and authorize the
+                  script. In{" "}
+                  <strong>Project Settings → Script properties</strong>, copy
+                  the value of <code>API_SECRET</code>.
+                </li>
+                <li>
+                  Deploy a web app that runs as you and accepts requests from{" "}
+                  <strong>Anyone</strong>. The script checks the signature on
+                  every request.
+                </li>
+                <li>
+                  Set <code>GOOGLE_SCRIPT_URL</code> to the web app’s{" "}
+                  <code>/exec</code> URL and <code>GOOGLE_SCRIPT_SECRET</code>{" "}
+                  to its secret in the{" "}
+                  <a
+                    href="https://vercel.com/izakh-s-projects/dmf/settings/environment-variables"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Vercel project
+                  </a>
+                  . Add <code>GOOGLE_SPREADSHEET_ID</code> for the workbook
+                  link. Redeploy.
+                </li>
+              </ol>
+              <button onClick={() => void start()}>Check connection</button>
+            </section>
+          ) : (
+            <form className="panel auth" onSubmit={signIn}>
+              <h2>
+                {mode === "setup"
+                  ? "Create your administrator login"
+                  : "Sign in"}
+              </h2>
+              <Field label="Email">
                 <input
-                  name="setup"
+                  name="email"
+                  type="email"
+                  required
+                  autoComplete="email"
+                />
+              </Field>
+              <Field label="Password">
+                <input
+                  name="password"
                   type="password"
                   required
-                  autoComplete="off"
+                  minLength={12}
+                  autoComplete={
+                    mode === "setup" ? "new-password" : "current-password"
+                  }
                 />
-                <small>Use the SETUP_TOKEN value in Vercel.</small>
               </Field>
-            )}
-            <button disabled={busy}>
-              {busy
-                ? "Please wait…"
-                : mode === "setup"
-                  ? "Create login"
-                  : "Sign in"}
-            </button>
-          </form>
-        )}
+              {mode === "setup" && (
+                <Field label="Administrator setup key">
+                  <input
+                    name="setup"
+                    type="password"
+                    required
+                    autoComplete="off"
+                  />
+                  <small>Use the SETUP_TOKEN value in Vercel.</small>
+                </Field>
+              )}
+              <button disabled={busy}>
+                {busy
+                  ? "Please wait…"
+                  : mode === "setup"
+                    ? "Create login"
+                    : "Sign in"}
+              </button>
+            </form>
+          )}
+        </div>
+        <div className="sign-in-photo" aria-hidden="true" />
       </main>
     );
   const matching = data.musicians.filter((m) =>
@@ -304,23 +314,10 @@ export default function Dashboard() {
       .reduce((sum, p) => sum + net(p), 0);
   return (
     <div className="shell">
-      <aside>
-        <Brand />
-        <div className="venue-label">{data.venue.name || "Your venue"}</div>
-        <nav aria-label="Workspace">
-          {pages.map((item) => (
-            <button
-              className={page === item ? "active" : ""}
-              aria-current={page === item ? "page" : undefined}
-              key={item}
-              onClick={() => go(item)}
-            >
-              {item}
-            </button>
-          ))}
-        </nav>
+      <header className="workspace-header">
+        <span className="eyebrow">{data.venue.name || "Stagebook"}</span>
         <button
-          className="signout"
+          className="secondary"
           onClick={async () => {
             if (demo) {
               setDemo(false);
@@ -332,47 +329,42 @@ export default function Dashboard() {
         >
           {demo ? "Exit demo" : "Sign out"}
         </button>
-      </aside>
+      </header>
       <main className="main">
-        <header className="top">
-          <span>Workspace / {page}</span>
-          <div>
-            {demo ? (
-              <span className="pill">Sample data</span>
-            ) : (
-              <>
-                <span className="pill">Google Sheets connected</span>
-                <button
-                  className="secondary compact"
-                  onClick={() => void start()}
-                >
-                  Refresh
-                </button>
-              </>
-            )}
-          </div>
-        </header>
+        <div className="workspace-title">
+          <p className="eyebrow">
+            {demo ? "Demo workspace" : "Venue workspace"}
+          </p>
+          <h1>{page === "Overview" ? "Musician payments" : page}</h1>
+        </div>
+        <nav aria-label="Workspace">
+          {pages.map((item) => (
+            <button
+              aria-current={page === item ? "page" : undefined}
+              key={item}
+              onClick={() => go(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </nav>
         <section className="content">
           <div className="heading">
-            <div>
-              <h1>{page === "Overview" ? "Musician payments" : page}</h1>
-              <p>
+            <p>
+              {
                 {
-                  {
-                    Overview:
-                      "Invite musicians, then record payments as they’re made.",
-                    Musicians: "Invite musicians to submit their own details.",
-                    Payments: "Record and review payments to your musicians.",
-                    Reports:
-                      "Review actual payments by date, band and musician.",
-                    Venue:
-                      "Enter your organizer details once to reuse them throughout the app.",
-                    "Google Sheet":
-                      "Review the workbook and manage registration links.",
-                  }[page]
-                }
-              </p>
-            </div>
+                  Overview:
+                    "Invite musicians, then record payments as they’re made.",
+                  Musicians: "Invite musicians to submit their own details.",
+                  Payments: "Record and review payments to your musicians.",
+                  Reports: "Review actual payments by date, band and musician.",
+                  Venue:
+                    "Enter your organizer details once to reuse them throughout the app.",
+                  "Google Sheet":
+                    "Review the workbook and manage registration links.",
+                }[page]
+              }
+            </p>
             {page === "Musicians" ? (
               <button disabled={busy} onClick={() => void mutate("invite", {})}>
                 + Registration link
@@ -390,20 +382,6 @@ export default function Dashboard() {
               )
             )}
           </div>
-          {demo && (
-            <div className="banner">
-              Demo data stays in this browser session.{" "}
-              <button
-                className="link"
-                onClick={() => {
-                  setDemo(false);
-                  setError("");
-                }}
-              >
-                Return to workspace →
-              </button>
-            </div>
-          )}
           {error && !modal && (
             <p className="error" role="alert">
               {error}
@@ -423,29 +401,25 @@ export default function Dashboard() {
                   </div>
                 ))}
               </div>
-              <section className="hero">
-                <div>
-                  <h2>Register musicians</h2>
-                  <p>
-                    Save your venue details, then share a link so musicians can
-                    enter their own information.
-                  </p>
-                  <button
-                    onClick={() =>
-                      data.venue.legalName
-                        ? void mutate("invite", {})
-                        : go("Venue")
-                    }
-                    disabled={busy}
-                  >
-                    {data.venue.legalName
-                      ? "Get registration link"
-                      : "Set up venue →"}
-                  </button>
-                </div>
-                <div className="disc" aria-hidden="true">
-                  <span>♬</span>
-                </div>
+              <section className="panel registration-action">
+                <h2>Register musicians</h2>
+                <p>
+                  Save your venue details, then share a link so musicians can
+                  enter their own information.
+                </p>
+                <button
+                  className="text-action"
+                  onClick={() =>
+                    data.venue.legalName
+                      ? void mutate("invite", {})
+                      : go("Venue")
+                  }
+                  disabled={busy}
+                >
+                  {data.venue.legalName
+                    ? "Get registration link"
+                    : "Set up venue"}
+                </button>
               </section>
               <section className="panel">
                 <h2>Recent payments</h2>
@@ -465,13 +439,6 @@ export default function Dashboard() {
               <div className="cards">
                 {matching.map((m) => (
                   <article className="panel musician" key={m.id}>
-                    <div className="avatar">
-                      {m.name
-                        .split(" ")
-                        .slice(0, 2)
-                        .map((s) => s[0])
-                        .join("")}
-                    </div>
                     <h2>{m.name}</h2>
                     <p>{m.band || "Independent musician"}</p>
                     <div className="subline">
@@ -534,6 +501,14 @@ export default function Dashboard() {
           {page === "Google Sheet" && (
             <section className="panel guide">
               <h2>Workbook</h2>
+              {!demo && (
+                <div className="sheet-status row">
+                  <span className="eyebrow">Google Sheets connected</span>
+                  <button className="secondary" onClick={() => void start()}>
+                    Refresh
+                  </button>
+                </div>
+              )}
               <p>
                 Venue details, musician details, payments and totals update on
                 every save. Restrict workbook access to staff who handle
