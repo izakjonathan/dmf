@@ -39,7 +39,10 @@ export class RequestError extends Error {
   }
 }
 export function sameOrigin(req: Request) {
-  if (req.headers.get("origin") !== new URL(req.url).origin)
+  const url = new URL(req.url);
+  const protocol = process.env.VERCEL ? "https:" : url.protocol;
+  const host = req.headers.get("host") ?? url.host;
+  if (req.headers.get("origin") !== protocol + "//" + host)
     throw new RequestError("Invalid request origin.", 403);
 }
 export const json = (body: unknown, status = 200) =>
