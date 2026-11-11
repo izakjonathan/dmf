@@ -67,7 +67,7 @@ function doPost(event) {
     return respond({ok:false});
   } catch (error) {
     console.error("Stagebook failed while " + step + ": " + error.message);
-    return respond({ok:false});
+    return respond({ok:false,error:step === "sending contract emails" ? "MAIL_STATUS_UNAVAILABLE" : undefined});
   } finally {
     if (lock && lock.hasLock()) lock.releaseLock();
   }
@@ -78,8 +78,20 @@ function authorizeContractEmail() {
 }
 function emailContracts(book, state, links, props) {
   if (!state || !Array.isArray(links) || !links.length) return {ok:false};
-  let quota = MailApp.getRemainingDailyQuota();
-  const delivery = {sent:0, failed:0};
+  const delivery = {sent:0, failed:0, issues:[]};
+  function failure(code) {
+    delivery.failed++;
+    if (!delivery.issues.includes(code)) delivery.issues.push(code);
+    console.warn("Stagebook contract email: " + code);
+  }
+  let quota;
+  try {
+    quota = MailApp.getRemainingDailyQuota();
+  } catch (error) {
+    const code = contractEmailError(error);
+    for (const item of links) failure(code);
+    return {ok:true,state,delivery};
+  }
   const recorded = [];
   for (const item of links) {
     const invite = state.invites.find(value => value.id === item.id);
@@ -87,7 +99,7 @@ function emailContracts(book, state, links, props) {
         invite.offer.returnBy < Utilities.formatDate(new Date(), "Europe/Copenhagen", "yyyy-MM-dd") ||
         !state.payments.some(payment => payment.id === invite.paymentId && !payment.voidReason) ||
         !/^https:\/\/dmf-eta\.vercel\.app\/register\/[a-f0-9]{64}$/.test(item.url)) {
-      delivery.failed++;
+      failure("MAIL_INACTIVE");
       continue;
     }
     if (invite.emailSentAt) {
@@ -103,7 +115,7 @@ function emailContracts(book, state, links, props) {
       continue;
     }
     if (reserved || quota < 1) {
-      delivery.failed++;
+      failure(reserved ? "MAIL_UNCERTAIN" : "MAIL_QUOTA");
       continue;
     }
     const offer = invite.offer;
@@ -124,9 +136,11 @@ function emailContracts(book, state, links, props) {
       props.setProperty(key, invite.emailSentAt);
       recorded.push(key);
       delivery.sent++;
-    } catch (_) {
-      // Delivery may be uncertain. Leave the reservation to prevent duplicate sends.
-      delivery.failed++;
+    } catch (error) {
+      const code = contractEmailError(error);
+      // Google explicitly rejected these sends. Keep reservations for unknown outcomes.
+      if (code !== "MAIL_UNCERTAIN") props.deleteProperty(key);
+      failure(code);
     }
   }
   if (recorded.length) {
@@ -135,6 +149,13 @@ function emailContracts(book, state, links, props) {
     for (const key of recorded) props.deleteProperty(key);
   }
   return {ok:true,state,delivery};
+}
+function contractEmailError(error) {
+  const message = String(error?.message || error);
+  if (/authoriz|permi[st]|access denied|scope/i.test(message)) return "MAIL_PERMISSION";
+  if (/quota|too many|daily limit/i.test(message)) return "MAIL_QUOTA";
+  if (/invalid.*(?:address|email|recipient)|(?:address|recipient).*invalid/i.test(message)) return "MAIL_ADDRESS";
+  return "MAIL_UNCERTAIN";
 }
 function matches(a,b) {
   let diff = a.length ^ b.length;

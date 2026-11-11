@@ -81,10 +81,14 @@ async function deliver(state: Workspace, invites: Invite[]) {
       workspace: clientWorkspace(result.state),
       delivery: result.delivery,
     });
-  } catch {
+  } catch (error) {
+    const message =
+      error instanceof RequestError
+        ? error.message
+        : "Google did not confirm the send. Check the existing signing request or copy its link.";
     return json({
       workspace: clientWorkspace(state),
-      delivery: { sent: 0, failed: invites.length },
+      delivery: { sent: 0, failed: invites.length, message },
     });
   }
 }

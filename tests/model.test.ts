@@ -267,3 +267,78 @@ test("the Apps Script sends once per contract and respects the remaining daily e
   assert.equal(result[1].failed, 1);
   assert.equal(properties.size, 0);
 });
+
+test("contract email reports known rejections and allows retry without clearing uncertain sends", () => {
+  const state = demoWorkspace();
+  const payment = state.payments[0];
+  const properties = new Map<string, string>();
+  const props = {
+    getProperty: (key: string) => properties.get(key),
+    setProperty: (key: string, value: string) => properties.set(key, value),
+    deleteProperty: (key: string) => properties.delete(key),
+  };
+  const warnings: string[] = [];
+  let failure = "You do not have permission to call MailApp.sendEmail";
+  let attempts = 0;
+  const invite = {
+    id: "first",
+    paymentId: payment.id,
+    offer: {
+      performerEmail: "artist@example.com",
+      returnBy: "2026-12-01",
+      performanceDate: "2026-11-30",
+      organizer: state.venue,
+    },
+  };
+  const context = {
+    state: { ...state, invites: [invite] },
+    props,
+    links: [
+      {
+        id: invite.id,
+        url: "https://dmf-eta.vercel.app/register/" + "a".repeat(64),
+      },
+    ],
+    Utilities: { formatDate: () => "2026-11-11" },
+    console: { warn: (message: string) => warnings.push(message) },
+    MailApp: {
+      getRemainingDailyQuota: () => 1,
+      sendEmail: () => {
+        attempts++;
+        if (failure) throw Error(failure);
+      },
+    },
+  };
+  runInNewContext(
+    readFileSync(new URL("../public/Code.gs", import.meta.url), "utf8") +
+      "\nwriteWorkbook = () => {};",
+    context,
+  );
+  assert.equal(
+    runInNewContext(
+      "emailContracts({}, state, links, props).delivery.issues[0]",
+      context,
+    ),
+    "MAIL_PERMISSION",
+  );
+  assert.equal(properties.size, 0);
+  failure = "Unexpected transport failure";
+  assert.equal(
+    runInNewContext(
+      "emailContracts({}, state, links, props).delivery.issues[0]",
+      context,
+    ),
+    "MAIL_UNCERTAIN",
+  );
+  assert.equal(properties.size, 1);
+  failure = "";
+  assert.equal(
+    runInNewContext(
+      "emailContracts({}, state, links, props).delivery.issues[0]",
+      context,
+    ),
+    "MAIL_UNCERTAIN",
+  );
+  assert.equal(attempts, 2);
+  assert.ok(warnings.some((message) => message.includes("MAIL_PERMISSION")));
+});

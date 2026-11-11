@@ -30,6 +30,18 @@ import {
 import { BankFields } from "./BankFields";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
 
+const deliveryMessages: Record<string, string> = {
+  MAIL_PERMISSION:
+    "Google denied email permission. Run authorizeContractEmail as the web app owner, then retry.",
+  MAIL_QUOTA:
+    "The Google account has reached its daily email limit. Copy the signing link to share it now.",
+  MAIL_ADDRESS:
+    "Google rejected the recipient address. Copy the signing link and verify the recipient before sharing.",
+  MAIL_INACTIVE: "This signing request is no longer active.",
+  MAIL_UNCERTAIN:
+    "Google didn’t confirm whether this email was sent. Copy the signing link to share it manually.",
+};
+
 type Page =
   | "Overview"
   | "Musicians"
@@ -202,11 +214,20 @@ export default function Dashboard() {
       dialog.current?.close();
       setModal(null);
       if (result.delivery) {
-        const { sent, failed } = result.delivery;
+        const { sent, failed, issues, message } = result.delivery;
         if (failed) {
           go("Google Sheet");
+          const detail = (issues as string[] | undefined)
+            ?.map((code) => deliveryMessages[code])
+            .filter(Boolean)
+            .join(" ");
+          const prefix = action === "payment" ? "Payment saved. " : "";
           setError(
-            `Saved. ${sent} signing email(s) sent. ${failed} unconfirmed. Check Signing requests to retry or copy a link.`,
+            prefix +
+              (sent ? `${sent} signing email(s) sent. ` : "") +
+              (message ||
+                detail ||
+                "Google did not confirm the email. Copy the signing link to share it manually."),
           );
         } else setNotice(`${sent} signing email(s) sent.`);
       } else setNotice("Saved to Google Sheets.");

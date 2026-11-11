@@ -102,6 +102,13 @@ async function sheets(action: string, data: object = {}) {
       "The sheet has a newer change. Refresh and try again.",
       409,
     );
+  if (!result.ok && action === "emailContracts")
+    throw new RequestError(
+      result.error === "MAIL_STATUS_UNAVAILABLE"
+        ? "Google couldn’t save the email status. Retry the existing signing request or copy its link."
+        : "The deployed Apps Script didn’t report email status. Update Code.gs and deploy a new version of the existing web app.",
+      503,
+    );
   if (!result.ok)
     throw new RequestError(
       action === "write"
@@ -129,7 +136,7 @@ export async function sendContractEmails(
   invites: Array<{ id: string; hash: string }>,
 ): Promise<{
   state: Workspace;
-  delivery: { sent: number; failed: number };
+  delivery: { sent: number; failed: number; issues?: string[] };
 }> {
   return sheets("emailContracts", {
     links: invites.map((invite) => ({
