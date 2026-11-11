@@ -227,7 +227,8 @@ export default function Dashboard() {
               <li>
                 In Apps Script, add <strong>Google Sheets API</strong> under
                 Services. Run <strong>initialize</strong> and authorize the
-                script. Copy the connection secret from the dialog.
+                script. In <strong>Project Settings → Script properties</strong>,
+                copy the value of <code>API_SECRET</code>.
               </li>
               <li>
                 Deploy a web app that runs as you and accepts requests from{" "}
