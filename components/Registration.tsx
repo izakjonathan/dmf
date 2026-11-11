@@ -21,8 +21,10 @@ type Details = {
   };
   profile: Partial<Musician> | null;
   offer: Omit<ContractOffer, "performerEmail"> | null;
+  signingOnly?: boolean;
+  performerName?: string;
 };
-function demoDetails(): Details {
+function demoDetails(signingOnly: boolean): Details {
   const venue = {
     name: "The Listening Room",
     legalName: "Example Venue ApS",
@@ -32,35 +34,39 @@ function demoDetails(): Details {
   return {
     venue,
     profile: null,
-    offer: {
-      organizer: {
-        ...venue,
-        address: "Example Street 12, Copenhagen",
-        cvr: "12345678",
-        phone: "",
-      },
-      performanceDate: today(),
-      start: "20:00",
-      end: "22:00",
-      getIn: "",
-      soundcheck: "",
-      sets: 2,
-      minutesPerSet: 45,
-      fee: 315000,
-      payOn: "",
-      returnBy: today(),
-      specialTerms: "",
-      organizerSigner: "Example Organizer",
-      organizerSignedAt: new Date().toISOString(),
-      template: dmfTemplate,
-    },
+    signingOnly,
+    performerName: signingOnly ? "Example Musician" : undefined,
+    offer: signingOnly
+      ? {
+          organizer: {
+            ...venue,
+            address: "Example Street 12, Copenhagen",
+            cvr: "12345678",
+            phone: "",
+          },
+          performanceDate: today(),
+          start: "20:00",
+          end: "22:00",
+          getIn: "",
+          soundcheck: "",
+          sets: 2,
+          minutesPerSet: 45,
+          fee: 315000,
+          payOn: "",
+          returnBy: today(),
+          specialTerms: "",
+          organizerSigner: "Example Organizer",
+          organizerSignedAt: new Date().toISOString(),
+          template: dmfTemplate,
+        }
+      : null,
   };
 }
 
 export default function Registration({ token }: { token: string }) {
-  const demo = token === "demo";
+  const demo = token === "demo" || token === "demo-contract";
   const [details, setDetails] = useState<Details | null>(() =>
-    demo ? demoDetails() : null,
+    demo ? demoDetails(token === "demo-contract") : null,
   );
   const [contract, setContract] = useState<SignedContract | null>(null);
   const [error, setError] = useState("");
@@ -101,18 +107,27 @@ export default function Registration({ token }: { token: string }) {
     setError("");
     try {
       if (demo) {
-        const profile = musicianSchema.parse(values);
-        const signed = performerSignatureSchema.parse(signature);
-        const { name, email, address, phone, band, cvr, payee } = profile;
-        if (details?.offer)
+        if (details?.offer) {
+          const signed = performerSignatureSchema.parse(signature);
+          const email = String(fields.email ?? "");
           setContract({
             id: "Demo",
+            paymentId: "Demo",
             musicianId: "Demo",
             offer: { ...details.offer, performerEmail: email },
-            performer: { name, email, address, phone, band, cvr, payee },
+            performer: {
+              name: "Example Musician",
+              email,
+              address: "Example address",
+              phone: "",
+              band: "",
+              cvr: "",
+              payee: "Individual",
+            },
             performerSigner: signed.name,
             performerSignedAt: new Date().toISOString(),
           });
+        } else musicianSchema.parse(values);
         setSaved(true);
         return;
       }
@@ -147,9 +162,15 @@ export default function Registration({ token }: { token: string }) {
             {demo && <span className="eyebrow">Demo</span>}
           </header>
           <h1>
-            Musician
-            <br />
-            details.
+            {details?.signingOnly ? (
+              "Sign contract"
+            ) : (
+              <>
+                Musician
+                <br />
+                details.
+              </>
+            )}
           </h1>
           {details && <p className="lead">{details.venue.name}</p>}
         </div>
@@ -180,89 +201,109 @@ export default function Registration({ token }: { token: string }) {
             {demo && (
               <p className="banner">Use fictional details to try this form.</p>
             )}
-            <div className="grid">
-              <label>
-                Legal name
-                <input
-                  name="name"
-                  required
-                  defaultValue={details.profile?.name}
-                />
-              </label>
-              <label>
-                Email
-                <input
-                  name="email"
-                  type="email"
-                  required
-                  defaultValue={details.profile?.email}
-                />
-              </label>
-              <label>
-                Phone (optional)
-                <input
-                  name="phone"
-                  type="tel"
-                  defaultValue={details.profile?.phone}
-                />
-              </label>
-              <label>
-                Band (optional)
-                <input name="band" defaultValue={details.profile?.band} />
-              </label>
-            </div>
-            <label>
-              Full address
-              <input
-                name="address"
-                required
-                minLength={5}
-                defaultValue={details.profile?.address}
-              />
-            </label>
-            <label>
-              Payment recipient
-              <select
-                name="payee"
-                value={payee}
-                onChange={(e) => setPayee(e.target.value)}
-              >
-                <option>Individual</option>
-                <option>Business</option>
-              </select>
-            </label>
-            {payee === "Business" ? (
-              <label>
-                CVR
-                <input
-                  name="cvr"
-                  inputMode="numeric"
-                  pattern="[0-9]{8}"
-                  required
-                  defaultValue={details.profile?.cvr}
-                />
-              </label>
-            ) : (
-              details.venue.collectCpr && (
+            {details.signingOnly ? (
+              <>
+                <p className="fine">Contract for {details.performerName}.</p>
                 <label>
-                  CPR (optional)
+                  Confirm your email
                   <input
-                    name="cpr"
-                    inputMode="numeric"
-                    pattern="[0-9]{6}-?[0-9]{4}"
-                    autoComplete="off"
+                    name="email"
+                    type="email"
+                    autoComplete="email"
+                    required
                   />
                 </label>
-              )
+              </>
+            ) : (
+              <>
+                <div className="grid">
+                  <label>
+                    Legal name
+                    <input
+                      name="name"
+                      required
+                      defaultValue={details.profile?.name}
+                    />
+                  </label>
+                  <label>
+                    Email
+                    <input
+                      name="email"
+                      type="email"
+                      required
+                      defaultValue={details.profile?.email}
+                    />
+                  </label>
+                  <label>
+                    Phone (optional)
+                    <input
+                      name="phone"
+                      type="tel"
+                      defaultValue={details.profile?.phone}
+                    />
+                  </label>
+                  <label>
+                    Band (optional)
+                    <input name="band" defaultValue={details.profile?.band} />
+                  </label>
+                </div>
+                <label>
+                  Full address
+                  <input
+                    name="address"
+                    required
+                    minLength={5}
+                    defaultValue={details.profile?.address}
+                  />
+                </label>
+                <label>
+                  Payment recipient
+                  <select
+                    name="payee"
+                    value={payee}
+                    onChange={(e) => setPayee(e.target.value)}
+                  >
+                    <option>Individual</option>
+                    <option>Business</option>
+                  </select>
+                </label>
+                {payee === "Business" ? (
+                  <label>
+                    CVR
+                    <input
+                      name="cvr"
+                      inputMode="numeric"
+                      pattern="[0-9]{8}"
+                      required
+                      defaultValue={details.profile?.cvr}
+                    />
+                  </label>
+                ) : (
+                  details.venue.collectCpr && (
+                    <label>
+                      CPR (optional)
+                      <input
+                        name="cpr"
+                        inputMode="numeric"
+                        pattern="[0-9]{6}-?[0-9]{4}"
+                        autoComplete="off"
+                      />
+                    </label>
+                  )
+                )}
+                <BankFields />
+              </>
             )}
-            <BankFields />
             {details.offer && (
               <section
                 className="contract-signing"
                 aria-labelledby="contract-heading"
               >
                 <h2 id="contract-heading">DMF standard contract</h2>
-                <ContractTerms offer={details.offer} />
+                <ContractTerms
+                  offer={details.offer}
+                  recordedPayment={details.signingOnly}
+                />
                 <label>
                   Your signature · type your full name
                   <input
@@ -281,12 +322,14 @@ export default function Registration({ token }: { token: string }) {
                 </label>
               </section>
             )}
-            <p className="fine">
-              {details.venue.legalName} uses these details to administer
-              payments and accounting. Details go to its restricted Google
-              Sheet. For corrections or questions, contact {details.venue.email}
-              .
-            </p>
+            {!details.signingOnly && (
+              <p className="fine">
+                {details.venue.legalName} uses these details to administer
+                payments and accounting. Details go to its restricted Google
+                Sheet. For corrections or questions, contact{" "}
+                {details.venue.email}.
+              </p>
+            )}
             <button disabled={busy}>
               {busy
                 ? "Submitting…"

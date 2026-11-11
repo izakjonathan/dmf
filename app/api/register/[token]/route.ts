@@ -22,11 +22,8 @@ function registrationOffer(invite: Invite) {
       "This contract has already been signed. Contact the venue if you need a copy.",
       409,
     );
-  if (!invite.offer && !invite.musicianId)
-    throw new RequestError(
-      "Ask the venue for a new registration link with your DMF contract.",
-      410,
-    );
+  if (!invite.offer && !invite.musicianId && !invite.registration)
+    throw new RequestError("Ask the venue for a new registration link.", 410);
   if (invite.offer && invite.offer.returnBy < today())
     throw new RequestError(
       "The signing deadline has passed. Ask the venue for a new link.",
@@ -41,13 +38,15 @@ export async function GET(_req: Request, context: Context) {
     const invite = findInvite(state, (await context.params).token);
     const offer = registrationOffer(invite);
     const { performerEmail, ...publicOffer } = offer ?? {};
-    const profile = state.musicians.find(
-      (item) => item.id === invite.musicianId,
-    );
+    const profile = invite.paymentId
+      ? undefined
+      : state.musicians.find((item) => item.id === invite.musicianId);
     const { name, legalName, email, collectCpr } = state.venue;
     return json({
       venue: { name, legalName, email, collectCpr },
       offer: offer ? publicOffer : null,
+      signingOnly: Boolean(invite.paymentId),
+      performerName: invite.performer?.name,
       profile: profile
         ? {
             name: profile.name,
@@ -71,6 +70,37 @@ export async function POST(req: Request, context: Context) {
     const invite = findInvite(state, (await context.params).token);
     const offer = registrationOffer(invite);
     const body = await req.json();
+    if (invite.paymentId) {
+      if (!offer || !invite.performer || !invite.musicianId)
+        throw new RequestError(
+          "This contract is missing details. Contact the venue.",
+          409,
+        );
+      const signature = performerSignatureSchema.parse(body.signature);
+      if (
+        signature.version !== offer.template.version ||
+        typeof body.email !== "string" ||
+        body.email.trim().toLowerCase() !== offer.performerEmail
+      )
+        throw new RequestError(
+          "Use the email address the venue sent this link to.",
+          403,
+        );
+      const contract: SignedContract = {
+        id: invite.id,
+        paymentId: invite.paymentId,
+        musicianId: invite.musicianId,
+        offer,
+        performer: invite.performer,
+        performerSigner: signature.name,
+        performerSignedAt: new Date().toISOString(),
+      };
+      state.contracts ??= [];
+      state.contracts.push(contract);
+      invite.signedAt = contract.performerSignedAt;
+      await writeState(state);
+      return json({ ok: true, contract });
+    }
     const input = musicianSchema.parse(body);
     const signature = offer
       ? performerSignatureSchema.parse(body.signature)

@@ -7,7 +7,6 @@ import {
   type ContractOffer,
   type SignedContract,
 } from "@/lib/model";
-import type { FormEvent } from "react";
 
 export function ContractLink({
   template = dmfTemplate,
@@ -21,33 +20,14 @@ export function ContractLink({
   );
 }
 
-export function OfferForm({
-  busy,
-  save,
-}: {
-  busy: boolean;
-  save: (values: object) => void;
-}) {
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    save(Object.fromEntries(new FormData(event.currentTarget)));
-  }
+export function PaymentContractFields() {
   return (
-    <form onSubmit={submit}>
-      <h2 id="workspace-dialog-title">DMF contract</h2>
+    <fieldset className="form-fieldset">
+      <legend>DMF signing request</legend>
       <p className="fine">
-        Create a signing link for one musician and one performance.{" "}
         <ContractLink />
       </p>
       <div className="grid">
-        <label>
-          Musician email
-          <input name="performerEmail" type="email" required />
-        </label>
-        <label>
-          Performance date
-          <input name="performanceDate" type="date" min={today()} required />
-        </label>
         <label>
           Starts at
           <input name="start" type="time" required />
@@ -79,19 +59,8 @@ export function OfferForm({
           />
         </label>
         <label>
-          Total fee for this musician (DKK)
-          <input name="fee" inputMode="decimal" required />
-        </label>
-        <label>
           Signing deadline
           <input name="returnBy" type="date" min={today()} required />
-        </label>
-        <label>
-          Bank transfer date (optional)
-          <input name="payOn" type="date" />
-          <small>
-            Leave blank for the first working day after the performance.
-          </small>
         </label>
       </div>
       <label>
@@ -106,10 +75,7 @@ export function OfferForm({
         <input name="accepted" type="checkbox" required /> I agree to the DMF
         terms and sign for the organizer.
       </label>
-      <button disabled={busy}>
-        {busy ? "Creating link…" : "Sign and copy link"}
-      </button>
-    </form>
+    </fieldset>
   );
 }
 
@@ -123,8 +89,10 @@ function signedDate(value: string) {
 
 export function ContractTerms({
   offer,
+  recordedPayment = false,
 }: {
   offer: Omit<ContractOffer, "performerEmail">;
+  recordedPayment?: boolean;
 }) {
   const organizer = offer.organizer;
   return (
@@ -169,10 +137,12 @@ export function ContractTerms({
         )}
         <dt>Fee</dt>
         <dd>{money(offer.fee)}</dd>
-        <dt>Payment</dt>
+        <dt>{recordedPayment ? "Payment date" : "Payment"}</dt>
         <dd>
-          Bank transfer{" "}
-          {offer.payOn || "on the first working day after the performance"}
+          {recordedPayment
+            ? offer.payOn
+            : "Bank transfer " +
+              (offer.payOn || "on the first working day after the performance")}
         </dd>
         <dt>Sign by</dt>
         <dd>{offer.returnBy}</dd>
@@ -206,7 +176,10 @@ export function ContractReceipt({
         Signed DMF contract
       </h2>
       <p className="fine">Contract ID {contract.id}</p>
-      <ContractTerms offer={contract.offer} />
+      <ContractTerms
+        offer={contract.offer}
+        recordedPayment={Boolean(contract.paymentId)}
+      />
       <dl className="contract-terms">
         <dt>Musician</dt>
         <dd>

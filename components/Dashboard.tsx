@@ -28,7 +28,7 @@ import {
 } from "@/lib/model";
 
 import { BankFields } from "./BankFields";
-import { ContractReceipt, OfferForm } from "./Contract";
+import { ContractReceipt, PaymentContractFields } from "./Contract";
 
 type Page =
   | "Overview"
@@ -39,7 +39,6 @@ type Page =
   | "Google Sheet";
 type Modal =
   | { kind: "payment" }
-  | { kind: "offer" }
   | { kind: "contract"; contract: SignedContract }
   | { kind: "musician"; profile: Musician; collectCpr: boolean }
   | { kind: "void"; payment: Payment };
@@ -103,6 +102,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState("");
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyUrl, setCopyUrl] = useState("");
+  const [signingUrl, setSigningUrl] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
   const actions = useRef<HTMLDivElement>(null);
   const actionToggle = useRef<HTMLButtonElement>(null);
@@ -201,7 +201,15 @@ export default function Dashboard() {
       setWorkspace(result.workspace);
       dialog.current?.close();
       setModal(null);
-      setNotice("Saved to Google Sheets.");
+      if (result.delivery) {
+        const { sent, failed } = result.delivery;
+        if (failed) {
+          go("Google Sheet");
+          setError(
+            `Saved. ${sent} signing email(s) sent. ${failed} unconfirmed. Check Signing requests to retry or copy a link.`,
+          );
+        } else setNotice(`${sent} signing email(s) sent.`);
+      } else setNotice("Saved to Google Sheets.");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -244,22 +252,28 @@ export default function Dashboard() {
       setBusy(false);
     }
   }
-  function getRegistration() {
-    if (copyUrl || demo) {
-      void copyRegistration({});
-      return;
-    }
-    if (!data.venue.legalName) {
-      go("Venue");
-      setError("Save your venue details before getting a registration link.");
-      return;
-    }
+  async function copySigningLink(id: string) {
+    setBusy(true);
     setError("");
-    setActionsOpen(false);
-    actionToggle.current?.focus();
-    setModal({ kind: "offer" });
+    try {
+      const result = await request(
+        "/api/workspace?signing=" + encodeURIComponent(id),
+      );
+      const url = location.origin + result.link;
+      try {
+        await navigator.clipboard.writeText(url);
+        setSigningUrl("");
+        setNotice("Signing link copied.");
+      } catch {
+        setSigningUrl(url);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
-  async function copyRegistration(values: object) {
+  async function copyRegistration() {
     if (!data.venue.legalName) {
       go("Venue");
       setError("Save your venue details before getting a registration link.");
@@ -273,7 +287,7 @@ export default function Dashboard() {
           if (demo) return location.origin + "/register/demo";
           const result = await request("/api/workspace", {
             action: "invite",
-            data: values,
+            data: {},
           });
           setWorkspace(result.workspace);
           return location.origin + result.link;
@@ -509,6 +523,7 @@ export default function Dashboard() {
           onClick={async () => {
             setActionsOpen(false);
             setCopyUrl("");
+            setSigningUrl("");
             go("Overview");
             if (demo) {
               setDemo(false);
@@ -674,34 +689,109 @@ export default function Dashboard() {
               ) : (
                 <p>No contracts signed yet.</p>
               )}
+              <h2>Signing requests</h2>
+              {signingUrl && (
+                <label>
+                  Copy signing link manually
+                  <input
+                    value={signingUrl}
+                    readOnly
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                </label>
+              )}
+              {data.invites
+                .filter((invite) => invite.paymentId)
+                .map((invite) => {
+                  const active =
+                    !invite.revoked &&
+                    !invite.signedAt &&
+                    invite.expiresAt.slice(0, 10) >= today();
+                  return (
+                    <div className="invite-row" key={invite.id}>
+                      <span>
+                        {invite.performerEmail} · {invite.performanceDate} ·{" "}
+                        {invite.signedAt
+                          ? "Signed"
+                          : invite.revoked
+                            ? "Revoked"
+                            : !active
+                              ? "Expired"
+                              : invite.emailSentAt
+                                ? "Email sent"
+                                : "Email unconfirmed"}
+                      </span>
+                      {active && (
+                        <div className="row">
+                          {!invite.emailSentAt && (
+                            <button
+                              className="secondary"
+                              disabled={busy}
+                              onClick={() =>
+                                void mutate("sendContract", { id: invite.id })
+                              }
+                            >
+                              Retry email
+                            </button>
+                          )}
+                          <button
+                            className="secondary"
+                            disabled={busy}
+                            onClick={() => void copySigningLink(invite.id)}
+                          >
+                            Copy signing link
+                          </button>
+                          <button
+                            className="secondary"
+                            disabled={busy}
+                            onClick={() =>
+                              void mutate("revoke", { id: invite.id })
+                            }
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              {!data.invites.some((invite) => invite.paymentId) && (
+                <p>No signing requests yet.</p>
+              )}
               <h2>Registration links</h2>
-              {data.invites.length ? (
-                data.invites.map((invite) => (
-                  <div className="invite-row" key={invite.id}>
-                    <span>
-                      {invite.performanceDate
-                        ? `${invite.performerEmail} · ${invite.performanceDate}`
-                        : invite.musicianId
-                          ? "Personal update"
-                          : "Legacy registration"}{" "}
-                      ·{" "}
-                      {invite.signedAt
-                        ? "Signed"
-                        : invite.revoked
-                          ? "Revoked"
-                          : invite.expiresAt.slice(0, 10)}
-                    </span>
-                    {!invite.revoked && !invite.signedAt && (
-                      <button
-                        className="secondary"
-                        disabled={busy}
-                        onClick={() => void mutate("revoke", { id: invite.id })}
-                      >
-                        Revoke
-                      </button>
-                    )}
-                  </div>
-                ))
+              {data.invites.some((invite) => !invite.paymentId) ? (
+                data.invites
+                  .filter((invite) => !invite.paymentId)
+                  .map((invite) => (
+                    <div className="invite-row" key={invite.id}>
+                      <span>
+                        {invite.performanceDate
+                          ? `${invite.performerEmail} · ${invite.performanceDate}`
+                          : invite.musicianId
+                            ? "Personal update"
+                            : invite.registration
+                              ? "Artist registration"
+                              : "Legacy registration"}{" "}
+                        ·{" "}
+                        {invite.signedAt
+                          ? "Signed"
+                          : invite.revoked
+                            ? "Revoked"
+                            : invite.expiresAt.slice(0, 10)}
+                      </span>
+                      {!invite.revoked && !invite.signedAt && (
+                        <button
+                          className="secondary"
+                          disabled={busy}
+                          onClick={() =>
+                            void mutate("revoke", { id: invite.id })
+                          }
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </div>
+                  ))
               ) : (
                 <p>No links created yet.</p>
               )}
@@ -739,7 +829,7 @@ export default function Dashboard() {
             >
               Add payment
             </button>
-            <button disabled={busy} onClick={getRegistration}>
+            <button disabled={busy} onClick={() => void copyRegistration()}>
               Get registration link
             </button>
             {copyUrl && (
@@ -786,12 +876,6 @@ export default function Dashboard() {
               <p className="error" role="alert">
                 {error}
               </p>
-            )}
-            {modal.kind === "offer" && (
-              <OfferForm
-                busy={busy}
-                save={(values) => void copyRegistration(values)}
-              />
             )}
             {modal.kind === "contract" && (
               <ContractReceipt contract={modal.contract} inDialog />
@@ -920,10 +1004,16 @@ function PaymentForm({
   const [date, setDate] = useState(today);
   const [amount, setAmount] = useState(() => String(tariff(today()) / 100));
   const [id] = useState(() => crypto.randomUUID());
+  const [entryKind, setEntryKind] = useState("Payment");
+  const [sendContract, setSendContract] = useState(true);
   const group = selected.startsWith("band:")
     ? bands.get(selected.slice(5))
     : undefined;
   const amountInOre = Math.round(Number(amount) * 100);
+  const withContract =
+    sendContract && (Boolean(group) || entryKind === "Payment");
+  const recipients =
+    group?.members ?? workspace.musicians.filter(({ id }) => id === selected);
   return (
     <>
       <h2 id="workspace-dialog-title">Add payment</h2>
@@ -932,7 +1022,39 @@ function PaymentForm({
       ) : (
         <form
           onSubmit={(event) => {
-            const values = { ...fields(event), id, amount: amountInOre };
+            const data = fields(event);
+            const {
+              start,
+              end,
+              getIn,
+              soundcheck,
+              sets,
+              minutesPerSet,
+              returnBy,
+              specialTerms,
+              organizerSigner,
+              accepted,
+              ...payment
+            } = data;
+            const values = {
+              ...payment,
+              id,
+              amount: amountInOre,
+              contract: withContract
+                ? {
+                    start,
+                    end,
+                    getIn,
+                    soundcheck,
+                    sets,
+                    minutesPerSet,
+                    returnBy,
+                    specialTerms,
+                    organizerSigner,
+                    accepted,
+                  }
+                : undefined,
+            };
             save(
               group
                 ? {
@@ -1027,7 +1149,11 @@ function PaymentForm({
             </Field>
             {!group && (
               <Field label="Entry type">
-                <select name="kind">
+                <select
+                  name="kind"
+                  value={entryKind}
+                  onChange={(event) => setEntryKind(event.target.value)}
+                >
                   <option>Payment</option>
                   <option>Refund</option>
                 </select>
@@ -1051,8 +1177,33 @@ function PaymentForm({
               </strong>
             </div>
           )}
+          {(group || entryKind === "Payment") && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={sendContract}
+                onChange={(event) => setSendContract(event.target.checked)}
+              />{" "}
+              Email a DMF contract for signing
+            </label>
+          )}
+          {withContract && (
+            <>
+              <p className="fine">
+                Send to {recipients.map(({ email }) => email).join(", ")}. The
+                contract uses the performance date and fee entered above.
+              </p>
+              <PaymentContractFields />
+            </>
+          )}
           <button disabled={busy}>
-            {busy ? "Saving…" : group ? "Save band payment" : "Save payment"}
+            {busy
+              ? "Saving…"
+              : withContract
+                ? "Save and send contract"
+                : group
+                  ? "Save band payment"
+                  : "Save payment"}
           </button>
         </form>
       )}

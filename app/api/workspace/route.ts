@@ -4,16 +4,19 @@ import {
   fail,
   hash,
   json,
+  paymentSigningPath,
+  paymentSigningToken,
   readState,
   RequestError,
   sameOrigin,
+  sendContractEmails,
   spreadsheet,
   token,
   writeState,
 } from "@/lib/server";
 import {
   clientWorkspace,
-  contractTermsSchema,
+  paymentContractSchema,
   dmfTemplate,
   musicianEditSchema,
   net,
@@ -21,6 +24,8 @@ import {
   today,
   updateMusician,
   venueSchema,
+  type Invite,
+  type Workspace,
 } from "@/lib/model";
 export const maxDuration = 60;
 export async function GET(req: Request) {
@@ -28,6 +33,11 @@ export async function GET(req: Request) {
     await admin();
     const state = await readState();
     const params = new URL(req.url).searchParams;
+    const signingId = params.get("signing");
+    if (signingId !== null) {
+      const invite = activePaymentInvite(state, signingId);
+      return json({ link: paymentSigningPath(invite) });
+    }
     const contractId = params.get("contract");
     if (contractId !== null) {
       const contract = state.contracts?.find(({ id }) => id === contractId);
@@ -48,13 +58,48 @@ export async function GET(req: Request) {
     return fail(error);
   }
 }
+function activePaymentInvite(state: Workspace, id: string) {
+  const invite = state.invites.find((item) => item.id === id);
+  if (
+    !invite?.paymentId ||
+    !invite.offer ||
+    invite.revoked ||
+    invite.signedAt ||
+    invite.offer.returnBy < today() ||
+    !state.payments.some(
+      (payment) => payment.id === invite.paymentId && !payment.voidReason,
+    )
+  )
+    throw new RequestError("This signing link is no longer active.", 409);
+  return invite;
+}
+
+async function deliver(state: Workspace, invites: Invite[]) {
+  try {
+    const result = await sendContractEmails(invites);
+    return json({
+      workspace: clientWorkspace(result.state),
+      delivery: result.delivery,
+    });
+  } catch {
+    return json({
+      workspace: clientWorkspace(state),
+      delivery: { sent: 0, failed: invites.length },
+    });
+  }
+}
+
 const request = z.discriminatedUnion("action", [
   z.object({ action: z.literal("venue"), data: venueSchema }),
   z.object({ action: z.literal("payment"), data: z.unknown() }),
   z.object({ action: z.literal("musician"), data: musicianEditSchema }),
   z.object({
     action: z.literal("invite"),
-    data: contractTermsSchema,
+    data: z.object({}),
+  }),
+  z.object({
+    action: z.literal("sendContract"),
+    data: z.object({ id: z.string().uuid() }),
   }),
   z.object({
     action: z.literal("revoke"),
@@ -80,36 +125,82 @@ export async function POST(req: Request) {
         state.venue = input.data;
         break;
       case "payment": {
+        let payments;
         try {
-          state.payments.push(...paymentRecords(state, input.data));
+          payments = paymentRecords(state, input.data);
         } catch (error) {
           if (error instanceof z.ZodError) throw error;
           throw new RequestError((error as Error).message);
         }
-        break;
+        const { contract } = z
+          .object({ contract: paymentContractSchema.optional() })
+          .parse(input.data);
+        if (!contract) {
+          state.payments.push(...payments);
+          break;
+        }
+        if (payments.some(({ kind }) => kind !== "Payment"))
+          throw new RequestError("Refunds do not generate signing requests.");
+        if (contract.returnBy < today())
+          throw new RequestError("Enter a signing deadline of today or later.");
+        const { name, legalName, address, cvr, email, phone } =
+          venueSchema.parse(state.venue);
+        const { accepted, ...terms } = contract;
+        const signedAt = new Date().toISOString();
+        const invites: Invite[] = payments.map((payment) => {
+          const artist = state.musicians.find(
+            ({ id }) => id === payment.musicianId,
+          )!;
+          const id = crypto.randomUUID();
+          return {
+            id,
+            hash: hash(paymentSigningToken(id)),
+            musicianId: artist.id,
+            paymentId: payment.id,
+            expiresAt: terms.returnBy + "T23:59:59.999Z",
+            performer: {
+              name: artist.name,
+              email: artist.email,
+              address: artist.address,
+              phone: artist.phone,
+              band: payment.band,
+              cvr: artist.cvr,
+              payee: artist.payee,
+            },
+            offer: {
+              ...terms,
+              performerEmail: artist.email.toLowerCase(),
+              performanceDate: payment.performedOn,
+              payOn: payment.paidOn,
+              fee: payment.amount,
+              organizer: { name, legalName, address, cvr, email, phone },
+              organizerSignedAt: signedAt,
+              template: dmfTemplate,
+            },
+          };
+        });
+        state.payments.push(...payments);
+        state.invites.push(...invites);
+        return deliver(await writeState(state), invites);
       }
+      case "sendContract":
+        return deliver(state, [activePaymentInvite(state, input.data.id)]);
       case "musician": {
         const error = updateMusician(state, input.data);
         if (error) throw new RequestError(error, 409);
         break;
       }
       case "invite": {
-        const { name, legalName, address, cvr, email, phone } =
-          venueSchema.parse(state.venue);
-        const { accepted, ...terms } = input.data;
-        if (terms.returnBy < today())
-          throw new RequestError("Enter a signing deadline of today or later.");
+        if (!state.venue.legalName)
+          throw new RequestError(
+            "Save your venue details before getting a registration link.",
+          );
         const raw = token();
         state.invites.push({
           id: crypto.randomUUID(),
           hash: hash(raw),
-          expiresAt: terms.returnBy + "T23:59:59.999Z",
-          offer: {
-            ...terms,
-            organizer: { name, legalName, address, cvr, email, phone },
-            organizerSignedAt: new Date().toISOString(),
-            template: dmfTemplate,
-          },
+          registration: true,
+          expiresAt: new Date(Date.now() + 90 * 86400000).toISOString(),
         });
         link = "/register/" + raw;
         break;
@@ -136,6 +227,9 @@ export async function POST(req: Request) {
             "Correct the related refund before voiding this payment.",
           );
         payment.voidReason = input.data.reason;
+        for (const invite of state.invites)
+          if (invite.paymentId === payment.id && !invite.signedAt)
+            invite.revoked = true;
         break;
       }
     }

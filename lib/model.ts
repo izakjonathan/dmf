@@ -84,23 +84,14 @@ const clock = z
 const accepted = z.literal("on", {
   message: "Confirm that you agree to the contract.",
 });
-export const contractTermsSchema = z
+export const paymentContractSchema = z
   .object({
-    performerEmail: email,
-    performanceDate: date,
     start: clock,
     end: clock,
     getIn: z.union([clock, z.literal("")]).default(""),
     soundcheck: z.union([clock, z.literal("")]).default(""),
     sets: z.coerce.number().int().min(1).max(30),
     minutesPerSet: z.coerce.number().int().min(1).max(720),
-    fee: z
-      .string()
-      .trim()
-      .regex(/^\d{1,7}([.,]\d{1,2})?$/, "Enter the fee in DKK.")
-      .transform((value) => Math.round(Number(value.replace(",", ".")) * 100))
-      .refine((value) => value > 0, "Enter a fee greater than zero."),
-    payOn: z.union([date, z.literal("")]).default(""),
     returnBy: date,
     specialTerms: z.string().trim().max(2000).default(""),
     organizerSigner: text.min(2, "Enter the organizer signer’s full name."),
@@ -109,14 +100,6 @@ export const contractTermsSchema = z
   .refine(
     (value) => value.start !== value.end,
     "Enter different start and end times.",
-  )
-  .refine(
-    (value) => !value.payOn || value.payOn >= value.performanceDate,
-    "Enter a payment date on or after the performance.",
-  )
-  .refine(
-    (value) => value.returnBy <= value.performanceDate,
-    "The signing deadline must be on or before the performance.",
   );
 
 export const performerSignatureSchema = z.object({
@@ -126,9 +109,13 @@ export const performerSignatureSchema = z.object({
 });
 
 export type ContractOffer = Omit<
-  z.infer<typeof contractTermsSchema>,
+  z.infer<typeof paymentContractSchema>,
   "accepted"
 > & {
+  performerEmail: string;
+  performanceDate: string;
+  fee: number;
+  payOn: string;
   organizer: Pick<
     Venue,
     "name" | "legalName" | "address" | "cvr" | "email" | "phone"
@@ -139,6 +126,7 @@ export type ContractOffer = Omit<
 
 export type SignedContract = {
   id: string;
+  paymentId?: string;
   musicianId: string;
   offer: ContractOffer;
   performer: Pick<
@@ -182,6 +170,10 @@ export type Invite = {
   revoked?: boolean;
   offer?: ContractOffer;
   signedAt?: string;
+  registration?: true;
+  paymentId?: string;
+  performer?: SignedContract["performer"];
+  emailSentAt?: string;
 };
 export type Workspace = {
   revision: number;
@@ -349,7 +341,7 @@ export function clientWorkspace(state: Workspace) {
     revision: state.revision,
     venue: state.venue,
     payments: state.payments,
-    invites: state.invites.map(({ hash, offer, ...invite }) => ({
+    invites: state.invites.map(({ hash, offer, performer, ...invite }) => ({
       ...invite,
       performanceDate: offer?.performanceDate,
       performerEmail: offer?.performerEmail,

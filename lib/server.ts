@@ -111,6 +111,34 @@ async function sheets(action: string, data: object = {}) {
     );
   return result;
 }
+export function paymentSigningToken(id: string) {
+  return sign("stagebook-payment-contract:" + id, process.env.AUTH_SECRET!);
+}
+
+export function paymentSigningPath(invite: { id: string; hash: string }) {
+  const raw = paymentSigningToken(invite.id);
+  if (!equals(hash(raw), invite.hash))
+    throw new RequestError(
+      "This link was issued with a previous signing key. Use the original link.",
+      409,
+    );
+  return "/register/" + raw;
+}
+
+export async function sendContractEmails(
+  invites: Array<{ id: string; hash: string }>,
+): Promise<{
+  state: Workspace;
+  delivery: { sent: number; failed: number };
+}> {
+  return sheets("emailContracts", {
+    links: invites.map((invite) => ({
+      id: invite.id,
+      url: "https://dmf-eta.vercel.app" + paymentSigningPath(invite),
+    })),
+  });
+}
+
 export async function readState(): Promise<Workspace> {
   return (await sheets("read")).state ?? empty();
 }

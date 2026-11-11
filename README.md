@@ -17,9 +17,9 @@ Keep the workbook and script editor restricted to the people authorized to handl
 
 ## Contracts and international accounts
 
-In the quick menu, choose **Get registration link**, enter the performance terms and sign as the organizer. Copy the link to the intended musician. Each link is for one email address and one performance. The musician can sign with their typed name and print or save the receipt. View the receipt under **Google Sheet → Signed contracts**. Create new links for unsigned registrations. Existing musician records and signed receipts remain available.
+Use **Get registration link** to collect artist and bank details. When recording a payment, leave **Email a DMF contract for signing** checked, enter the performance terms and sign for the organizer. Each recipient, including each paid band member, receives a separate signing link. Find delivery status and manual sharing under **Google Sheet → Signing requests**, and receipts under **Signed contracts**.
 
-Update the bound Apps Script with the latest [Code.gs](public/Code.gs) to add the **IBAN** column and **Contracts** tab to the workbook. In **Deploy → Manage deployments**, edit the existing web app, select **New version**, and deploy. This keeps the endpoint URL and Script Properties. The next successful save updates the visible tabs.
+For automatic delivery, replace the bound Apps Script with the latest [Code.gs](public/Code.gs). Run **authorizeContractEmail** once in the editor as the deployment owner and approve the email permission. It does not send a message. Then go to **Deploy → Manage deployments**, edit the existing web app and deploy a **New version** to retain the same endpoint URL. Email is sent through the script owner's Google account with the venue email set as Reply-To.
 
 ## Development
 

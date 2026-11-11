@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import {
   clientWorkspace,
-  contractTermsSchema,
+  paymentContractSchema,
   dmfTemplate,
   demoWorkspace,
   isoWeek,
@@ -175,31 +175,28 @@ test("registration accepts either Danish bank details or a normalized IBAN", () 
   );
 });
 
-test("DMF terms require organizer and musician acceptance and store exact fees", () => {
+test("payment contract fields require explicit organizer and musician acceptance", () => {
   const terms = {
-    performerEmail: "test@example.com",
-    performanceDate: "2026-12-03",
-    returnBy: "2026-12-02",
+    returnBy: "2026-12-04",
     start: "22:00",
     end: "00:00",
     sets: "2",
     minutesPerSet: "45",
-    fee: "3150,50",
     organizerSigner: "Organizer Test",
   };
-  assert.throws(() => contractTermsSchema.parse(terms), /Confirm/);
+  assert.throws(() => paymentContractSchema.parse(terms), /Confirm/);
   assert.equal(
-    contractTermsSchema.parse({ ...terms, accepted: "on" }).fee,
-    315050,
+    paymentContractSchema.parse({ ...terms, accepted: "on" }).sets,
+    2,
   );
   assert.throws(
     () =>
-      contractTermsSchema.parse({
+      paymentContractSchema.parse({
         ...terms,
+        end: terms.start,
         accepted: "on",
-        payOn: "2026-12-01",
       }),
-    /payment date/,
+    /different/,
   );
   assert.throws(
     () =>
@@ -217,4 +214,56 @@ test("DMF terms require organizer and musician acceptance and store exact fees",
     }).name,
     "Musician Test",
   );
+});
+
+test("the Apps Script sends once per contract and respects the remaining daily email quota", () => {
+  const state = demoWorkspace();
+  const [payment, second] = state.payments;
+  const mail: object[] = [];
+  const properties = new Map<string, string>();
+  const props = {
+    getProperty: (key: string) => properties.get(key),
+    setProperty: (key: string, value: string) => properties.set(key, value),
+    deleteProperty: (key: string) => properties.delete(key),
+  };
+  const makeInvite = (id: string, paymentId: string, recipient: string) => ({
+    id,
+    paymentId,
+    offer: {
+      performerEmail: recipient,
+      returnBy: "2026-12-01",
+      performanceDate: "2026-11-30",
+      organizer: state.venue,
+    },
+  });
+  const first = makeInvite("first", payment.id, "artist@example.com");
+  const next = makeInvite("next", second.id, "next@example.com");
+  const result = runInNewContext(
+    readFileSync(new URL("../public/Code.gs", import.meta.url), "utf8") +
+      `
+      writeWorkbook = () => {};
+      const initial = emailContracts({}, state, links, props);
+      const retry = emailContracts({}, state, links, props);
+      [initial.delivery, retry.delivery];
+    `,
+    {
+      state: { ...state, invites: [first, next] },
+      props,
+      links: [first, next].map(({ id }) => ({
+        id,
+        url: "https://dmf-eta.vercel.app/register/" + "a".repeat(64),
+      })),
+      Utilities: { formatDate: () => "2026-11-11" },
+      MailApp: {
+        getRemainingDailyQuota: () => Math.max(0, 1 - mail.length),
+        sendEmail: (message: object) => mail.push(message),
+      },
+    },
+  );
+  assert.equal(mail.length, 1);
+  assert.equal(result[0].sent, 1);
+  assert.equal(result[0].failed, 1);
+  assert.equal(result[1].sent, 1);
+  assert.equal(result[1].failed, 1);
+  assert.equal(properties.size, 0);
 });

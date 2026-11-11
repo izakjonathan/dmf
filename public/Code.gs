@@ -58,6 +58,10 @@ function doPost(event) {
     const length = storage.getLastRow();
     const encoded = length > 1 ? storage.getRange(2,1,length-1,1).getValues().map(row=>row[0]).join("") : "";
     const state = encoded ? JSON.parse(Utilities.newBlob(Utilities.base64Decode(encoded)).getDataAsString("UTF-8")) : null;
+    if (request.action === "emailContracts") {
+      step = "sending contract emails";
+      return respond(emailContracts(book, state, request.links, props));
+    }
     if (request.action === "metadata") return respond({ok:true,initialized:Boolean(state?.auth)});
     if (request.action === "read") return respond({ok:true,state:state});
     return respond({ok:false});
@@ -67,6 +71,70 @@ function doPost(event) {
   } finally {
     if (lock && lock.hasLock()) lock.releaseLock();
   }
+}
+// Run once in the editor as the existing web app owner. This sends no email.
+function authorizeContractEmail() {
+  console.info("Contract email is authorized. Remaining recipients today: " + MailApp.getRemainingDailyQuota());
+}
+function emailContracts(book, state, links, props) {
+  if (!state || !Array.isArray(links) || !links.length) return {ok:false};
+  let quota = MailApp.getRemainingDailyQuota();
+  const delivery = {sent:0, failed:0};
+  const recorded = [];
+  for (const item of links) {
+    const invite = state.invites.find(value => value.id === item.id);
+    if (!invite?.paymentId || !invite.offer || invite.revoked || invite.signedAt ||
+        invite.offer.returnBy < Utilities.formatDate(new Date(), "Europe/Copenhagen", "yyyy-MM-dd") ||
+        !state.payments.some(payment => payment.id === invite.paymentId && !payment.voidReason) ||
+        !/^https:\/\/dmf-eta\.vercel\.app\/register\/[a-f0-9]{64}$/.test(item.url)) {
+      delivery.failed++;
+      continue;
+    }
+    if (invite.emailSentAt) {
+      delivery.sent++;
+      continue;
+    }
+    const key = "stagebook-contract-mail:" + invite.id;
+    const reserved = props.getProperty(key);
+    if (reserved && reserved !== "sending") {
+      invite.emailSentAt = reserved;
+      recorded.push(key);
+      delivery.sent++;
+      continue;
+    }
+    if (reserved || quota < 1) {
+      delivery.failed++;
+      continue;
+    }
+    const offer = invite.offer;
+    props.setProperty(key, "sending");
+    try {
+      MailApp.sendEmail({
+        to: offer.performerEmail,
+        replyTo: offer.organizer.email,
+        name: offer.organizer.name,
+        subject: "DMF contract to sign · " + offer.performanceDate,
+        body: "Please review and sign your DMF contract for " + offer.organizer.name +
+          " (performance " + offer.performanceDate + ").\n\n" +
+          item.url + "\n\nSigning deadline: " + offer.returnBy +
+          "\nIf you have questions, reply to the venue."
+      });
+      quota--;
+      invite.emailSentAt = new Date().toISOString();
+      props.setProperty(key, invite.emailSentAt);
+      recorded.push(key);
+      delivery.sent++;
+    } catch (_) {
+      // Delivery may be uncertain. Leave the reservation to prevent duplicate sends.
+      delivery.failed++;
+    }
+  }
+  if (recorded.length) {
+    state.revision++;
+    writeWorkbook(book,state);
+    for (const key of recorded) props.deleteProperty(key);
+  }
+  return {ok:true,state,delivery};
 }
 function matches(a,b) {
   let diff = a.length ^ b.length;
