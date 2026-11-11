@@ -8,7 +8,7 @@ The app saves to a dedicated Google Sheet on every successful change. It creates
 
 1. Create a dedicated, private workbook and open **Extensions → Apps Script**.
 2. Paste [Code.gs](public/Code.gs). In **Services**, add **Google Sheets API**.
-3. Run **initialize** and authorize it. Copy the connection secret from the workbook dialog.
+3. Run **initialize** and authorize it. In **Project Settings → Script properties**, copy the value of **API_SECRET**.
 4. Deploy a **Web app** that runs as the owner and accepts requests from **Anyone**. The endpoint verifies a server signature on every request. Copy the **/exec** URL.
 5. In the Vercel project, set **GOOGLE_SCRIPT_URL**, **GOOGLE_SCRIPT_SECRET** and **GOOGLE_SPREADSHEET_ID** for Production. Redeploy. **AUTH_SECRET** and **SETUP_TOKEN** must also contain distinct random secrets of at least 32 characters.
 6. Open the app and create your administrator login with the setup token. Enter your own information under **Venue**.
