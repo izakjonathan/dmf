@@ -213,10 +213,6 @@ nav button {
   padding-inline: 12px;
 }
 
-nav button span {
-  display: none;
-}
-
 nav .active {
   background: var(--copper);
   color: var(--deep);
@@ -702,12 +698,6 @@ label small {
   nav button {
     width: 100%;
     justify-content: flex-start;
-  }
-
-  nav button span {
-    display: inline-block;
-    width: 26px;
-    flex: none;
   }
 
   .signout {

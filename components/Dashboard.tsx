@@ -40,7 +40,6 @@ const pages: Page[] = [
   "Venue",
   "Google Sheet",
 ];
-const icons = ["◫", "♬", "↗", "▥", "⌂", "▤"];
 function fields(event: FormEvent<HTMLFormElement>) {
   event.preventDefault();
   return Object.fromEntries(new FormData(event.currentTarget));
@@ -197,7 +196,7 @@ export default function Dashboard() {
               setError("");
             }}
           >
-            Explore demo ↗
+            Explore demo
           </button>
         </header>
         <h1>Musician payments</h1>
@@ -309,14 +308,13 @@ export default function Dashboard() {
         <Brand />
         <div className="venue-label">{data.venue.name || "Your venue"}</div>
         <nav aria-label="Workspace">
-          {pages.map((item, index) => (
+          {pages.map((item) => (
             <button
               className={page === item ? "active" : ""}
               aria-current={page === item ? "page" : undefined}
               key={item}
               onClick={() => go(item)}
             >
-              <span aria-hidden="true">{icons[index]}</span>
               {item}
             </button>
           ))}
@@ -332,7 +330,7 @@ export default function Dashboard() {
             await start();
           }}
         >
-          ↪ {demo ? "Exit demo" : "Sign out"}
+          {demo ? "Exit demo" : "Sign out"}
         </button>
       </aside>
       <main className="main">
@@ -441,7 +439,7 @@ export default function Dashboard() {
                     disabled={busy}
                   >
                     {data.venue.legalName
-                      ? "Get registration link ↗"
+                      ? "Get registration link"
                       : "Set up venue →"}
                   </button>
                 </div>
@@ -548,7 +546,7 @@ export default function Dashboard() {
                   target="_blank"
                   rel="noreferrer"
                 >
-                  Open Google Sheet ↗
+                  Open Google Sheet
                 </a>
               )}
               <h2>Registration links</h2>
@@ -663,7 +661,7 @@ export default function Dashboard() {
                     target="_blank"
                     rel="noreferrer"
                   >
-                    Open form ↗
+                    Open form
                   </a>
                 </div>
               </>
