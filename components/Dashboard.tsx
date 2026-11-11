@@ -312,6 +312,7 @@ export default function Dashboard() {
           {pages.map((item, index) => (
             <button
               className={page === item ? "active" : ""}
+              aria-current={page === item ? "page" : undefined}
               key={item}
               onClick={() => go(item)}
             >
