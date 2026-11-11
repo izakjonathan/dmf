@@ -71,7 +71,16 @@ async function sheets(action: string, data: object = {}) {
     !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(endpoint)
   )
     throw new RequestError("Check the Google Apps Script deployment URL.", 503);
-  const body = JSON.stringify({ action, timestamp: Date.now(), ...data });
+  // Keep the signed payload byte-for-byte identical across Apps Script and Node.
+  const body = JSON.stringify({
+    action,
+    timestamp: Date.now(),
+    ...data,
+  }).replace(
+    /[^\x00-\x7f]/g,
+    (character) =>
+      "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"),
+  );
   const response = await fetch(endpoint, {
     method: "POST",
     body: JSON.stringify({
@@ -95,7 +104,9 @@ async function sheets(action: string, data: object = {}) {
     );
   if (!result.ok)
     throw new RequestError(
-      "Google Sheets rejected the request. Check the script deployment and secret.",
+      action === "write"
+        ? "Google Sheets could not save this change. Check the latest Apps Script execution."
+        : "Google Sheets rejected the request. Check the script deployment and secret.",
       503,
     );
   return result;

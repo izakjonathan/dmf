@@ -22,6 +22,7 @@ function initialize() {
 
 function doPost(event) {
   let lock;
+  let step = "checking the request";
   try {
     const props = PropertiesService.getScriptProperties();
     const secret = props.getProperty("API_SECRET");
@@ -29,17 +30,28 @@ function doPost(event) {
     if (!secret || typeof input.body !== "string" || input.body.length > 3000000) return respond({ok:false});
     const expected = Utilities.computeHmacSha256Signature(input.body, secret)
       .map(value => ((value + 256) % 256).toString(16).padStart(2, "0")).join("");
-    if (!matches(expected, String(input.signature || ""))) return respond({ok:false});
+    if (!matches(expected, String(input.signature || ""))) {
+      console.warn("Stagebook request signature did not match.");
+      return respond({ok:false});
+    }
     const request = JSON.parse(input.body);
     if (!Number.isFinite(request.timestamp) || Math.abs(Date.now() - request.timestamp) > 120000) return respond({ok:false});
     lock = LockService.getScriptLock();
-    if (!lock.tryLock(10000)) return respond({ok:false});
+    if (!lock.tryLock(10000)) {
+      console.warn("Stagebook could not acquire the workbook lock.");
+      return respond({ok:false});
+    }
+    step = "opening the workbook";
     const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
     const storage = book.getSheetByName("_Stagebook");
     const revision = Number(storage.getRange("A1").getValue()) || 0;
     if (request.action === "write") {
       if (request.expected !== revision) return respond({ok:false,error:"CONFLICT"});
-      if (request.state?.revision !== revision + 1) return respond({ok:false});
+      if (request.state?.revision !== revision + 1) {
+        console.warn("Stagebook received an invalid workbook revision.");
+        return respond({ok:false});
+      }
+      step = "saving the workbook";
       writeWorkbook(book, request.state);
       return respond({ok:true});
     }
@@ -49,7 +61,8 @@ function doPost(event) {
     if (request.action === "metadata") return respond({ok:true,initialized:Boolean(state?.auth)});
     if (request.action === "read") return respond({ok:true,state:state});
     return respond({ok:false});
-  } catch (_) {
+  } catch (error) {
+    console.error("Stagebook failed while " + step + ": " + error.message);
     return respond({ok:false});
   } finally {
     if (lock && lock.hasLock()) lock.releaseLock();
