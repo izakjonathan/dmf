@@ -207,3 +207,41 @@ export function findInvite(state: Workspace, raw: string) {
     );
   return invite;
 }
+
+export async function probeContractEmail() {
+  try {
+    // An invalid invite ID and empty URL force the script to skip delivery.
+    // MailApp quota is queried before that check, including in the first email adapter.
+    const result = await sheets("emailContracts", {
+      links: [{ id: "", url: "" }],
+    });
+    const issues = result.delivery?.issues ?? [];
+    const mail = issues.includes("MAIL_PERMISSION")
+      ? "permission"
+      : issues.includes("MAIL_UNCERTAIN")
+        ? "uncertain"
+        : result.delivery?.sent === 0 && result.delivery?.failed === 1
+          ? "mail-app-accessible"
+          : "unexpected";
+    const invites: Workspace["invites"] = result.state?.invites ?? [];
+    return {
+      mail,
+      signingRequests: invites.filter((invite) => invite.paymentId).length,
+      emailsRecorded: invites.filter((invite) => invite.emailSentAt).length,
+    };
+  } catch (error) {
+    let workbook = false;
+    try {
+      await metadata();
+      workbook = true;
+    } catch {}
+    return {
+      workbook,
+      mail:
+        error instanceof RequestError &&
+        error.message.startsWith("The deployed Apps Script")
+          ? "adapter-rejected-mail"
+          : "unavailable",
+    };
+  }
+}
