@@ -23,8 +23,12 @@ import {
   type ClientWorkspace,
   type Musician,
   type Payment,
+  type SignedContract,
   type Venue,
 } from "@/lib/model";
+
+import { BankFields } from "./BankFields";
+import { ContractReceipt, OfferForm } from "./Contract";
 
 type Page =
   | "Overview"
@@ -35,6 +39,8 @@ type Page =
   | "Google Sheet";
 type Modal =
   | { kind: "payment" }
+  | { kind: "offer" }
+  | { kind: "contract"; contract: SignedContract }
   | { kind: "musician"; profile: Musician; collectCpr: boolean }
   | { kind: "void"; payment: Payment };
 const pages: Page[] = [
@@ -224,7 +230,36 @@ export default function Dashboard() {
       setBusy(false);
     }
   }
-  async function copyRegistration() {
+  async function viewContract(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await request(
+        "/api/workspace?contract=" + encodeURIComponent(id),
+      );
+      setModal({ kind: "contract", contract: result.contract });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function getRegistration() {
+    if (copyUrl || demo) {
+      void copyRegistration({});
+      return;
+    }
+    if (!data.venue.legalName) {
+      go("Venue");
+      setError("Save your venue details before getting a registration link.");
+      return;
+    }
+    setError("");
+    setActionsOpen(false);
+    actionToggle.current?.focus();
+    setModal({ kind: "offer" });
+  }
+  async function copyRegistration(values: object) {
     if (!data.venue.legalName) {
       go("Venue");
       setError("Save your venue details before getting a registration link.");
@@ -238,7 +273,7 @@ export default function Dashboard() {
           if (demo) return location.origin + "/register/demo";
           const result = await request("/api/workspace", {
             action: "invite",
-            data: {},
+            data: values,
           });
           setWorkspace(result.workspace);
           return location.origin + result.link;
@@ -263,6 +298,8 @@ export default function Dashboard() {
     }
     try {
       const url = await link;
+      dialog.current?.close();
+      setModal(null);
       if (!(await clipboard)) {
         try {
           await navigator.clipboard.writeText(url);
@@ -618,20 +655,43 @@ export default function Dashboard() {
                   Open Google Sheet
                 </a>
               )}
+              <h2>Signed contracts</h2>
+              {data.contracts.length ? (
+                data.contracts.map((contract) => (
+                  <div className="invite-row" key={contract.id}>
+                    <span>
+                      {contract.performer} · {contract.date}
+                    </span>
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void viewContract(contract.id)}
+                    >
+                      View contract
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <p>No contracts signed yet.</p>
+              )}
               <h2>Registration links</h2>
               {data.invites.length ? (
                 data.invites.map((invite) => (
                   <div className="invite-row" key={invite.id}>
                     <span>
-                      {invite.musicianId
-                        ? "Personal update"
-                        : "New registrations"}{" "}
+                      {invite.performanceDate
+                        ? `${invite.performerEmail} · ${invite.performanceDate}`
+                        : invite.musicianId
+                          ? "Personal update"
+                          : "Legacy registration"}{" "}
                       ·{" "}
-                      {invite.revoked
-                        ? "Revoked"
-                        : invite.expiresAt.slice(0, 10)}
+                      {invite.signedAt
+                        ? "Signed"
+                        : invite.revoked
+                          ? "Revoked"
+                          : invite.expiresAt.slice(0, 10)}
                     </span>
-                    {!invite.revoked && (
+                    {!invite.revoked && !invite.signedAt && (
                       <button
                         className="secondary"
                         disabled={busy}
@@ -679,7 +739,7 @@ export default function Dashboard() {
             >
               Add payment
             </button>
-            <button disabled={busy} onClick={() => void copyRegistration()}>
+            <button disabled={busy} onClick={getRegistration}>
               Get registration link
             </button>
             {copyUrl && (
@@ -726,6 +786,15 @@ export default function Dashboard() {
               <p className="error" role="alert">
                 {error}
               </p>
+            )}
+            {modal.kind === "offer" && (
+              <OfferForm
+                busy={busy}
+                save={(values) => void copyRegistration(values)}
+              />
+            )}
+            {modal.kind === "contract" && (
+              <ContractReceipt contract={modal.contract} inDialog />
             )}
             {modal.kind === "payment" && (
               <PaymentForm
@@ -1075,27 +1144,8 @@ function MusicianEditor({
             />
           </Field>
         )}
-        <Field label="Bank registration number">
-          <input
-            name="registration"
-            defaultValue={profile.registration}
-            required
-            inputMode="numeric"
-            pattern="[0-9]{4}"
-            autoComplete="off"
-          />
-        </Field>
-        <Field label="Bank account number">
-          <input
-            name="account"
-            defaultValue={profile.account}
-            required
-            inputMode="numeric"
-            pattern="[0-9]{6,10}"
-            autoComplete="off"
-          />
-        </Field>
       </div>
+      <BankFields profile={profile} />
       <button disabled={busy}>{busy ? "Saving…" : "Save musician"}</button>
     </form>
   );

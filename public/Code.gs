@@ -7,7 +7,7 @@ function initialize() {
   const props = PropertiesService.getScriptProperties();
   const configuredId = props.getProperty("SPREADSHEET_ID");
   if (configuredId && configuredId !== spreadsheet.getId()) throw Error("This script is already bound to another workbook.");
-  const names = ["Venue", "Musicians", "Payments", "Summary", "_Stagebook"];
+  const names = ["Venue", "Musicians", "Payments", "Summary", "Contracts", "_Stagebook"];
   if (!configuredId && names.some(name => spreadsheet.getSheetByName(name)?.getLastRow())) {
     throw Error("Use a new workbook so existing data cannot be overwritten.");
   }
@@ -92,8 +92,8 @@ function rowsFor(state) {
     ["Venue","Legal organizer","Address","CVR","Email","Phone","Default payment reference","Collect CPR"],
     [v.name,v.legalName,v.address,v.cvr,v.email,v.phone,v.reference,v.collectCpr ? "Enabled" : "Disabled"]
   ];
-  const musicians = [["Musician ID","Legal name","Email","Phone","Address","Band","Recipient","CVR","CPR","Bank registration","Bank account","Registered","Updated"]];
-  for (const m of state.musicians) musicians.push([m.id,m.name,m.email,m.phone,m.address,m.band,m.payee,m.cvr,m.cpr,m.registration,m.account,m.createdAt,m.updatedAt]);
+  const musicians = [["Musician ID","Legal name","Email","Phone","Address","Band","Recipient","CVR","CPR","Bank registration","Bank account","Registered","Updated","IBAN"]];
+  for (const m of state.musicians) musicians.push([m.id,m.name,m.email,m.phone,m.address,m.band,m.payee,m.cvr,m.cpr,m.registration,m.account,m.createdAt,m.updatedAt,m.iban || ""]);
   const payments = [["Payment ID","Musician ID","Musician","Band at payment","Venue","Paid on","Performance date","Amount DKK","Net DKK","Type","Reference","Notes","Void reason","Recorded at"]];
   const groups = new Map();
   for (const p of state.payments) {
@@ -114,7 +114,20 @@ function rowsFor(state) {
     const [type,label,net,identifier] = groups.get(key);
     summary.push([type,label,net/100,identifier]);
   }
-  return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary};
+  const contracts = [[
+    "Contract ID","Musician ID","Musician","Email","Band","Venue","Performance date",
+    "Starts","Ends","Sets","Minutes per set","Fee DKK","Payment","Special agreements",
+    "Organizer signer","Organizer signed at","Musician signer","Musician signed at","Template"
+  ]];
+  for (const c of state.contracts || []) {
+    const t = c.offer;
+    contracts.push([
+      c.id,c.musicianId,c.performer.name,c.performer.email,c.performer.band,t.organizer.name,t.performanceDate,
+      t.start,t.end,t.sets,t.minutesPerSet,t.fee/100,t.payOn || "First working day after performance",t.specialTerms,
+      t.organizerSigner,t.organizerSignedAt,c.performerSigner,c.performerSignedAt,t.template.url
+    ]);
+  }
+  return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary,Contracts:contracts};
 }
 function writeWorkbook(book,state) {
   const tables = rowsFor(state);
@@ -126,8 +139,19 @@ function writeWorkbook(book,state) {
   for (const name of Object.keys(tables)) {
     const sheet = book.getSheetByName(name);
     const rows = tables[name];
-    const sheetId = sheet.getSheetId();
-    if (rows.length > sheet.getMaxRows()) {
+    let sheetId;
+    if (!sheet && name === "Contracts") {
+      const used = new Set(book.getSheets().map(item => item.getSheetId()));
+      sheetId = 1;
+      while (used.has(sheetId)) sheetId++;
+      requests.push({addSheet:{properties:{sheetId,title:name,gridProperties:{rowCount:Math.max(1000,rows.length),columnCount:26}}}});
+    } else {
+      if (name === "Contracts" && sheet.getLastRow() && sheet.getRange("A1").getValue() !== rows[0][0]) {
+        throw Error("Rename the existing Contracts tab to avoid overwriting unrelated data.");
+      }
+      sheetId = sheet.getSheetId();
+    }
+    if (sheet && rows.length > sheet.getMaxRows()) {
       requests.push({updateSheetProperties:{properties:{sheetId,gridProperties:{rowCount:rows.length}},fields:"gridProperties.rowCount"}});
     }
     requests.push({updateCells:{

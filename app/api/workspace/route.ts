@@ -13,9 +13,12 @@ import {
 } from "@/lib/server";
 import {
   clientWorkspace,
+  contractTermsSchema,
+  dmfTemplate,
   musicianEditSchema,
   net,
   paymentRecords,
+  today,
   updateMusician,
   venueSchema,
 } from "@/lib/model";
@@ -24,7 +27,14 @@ export async function GET(req: Request) {
   try {
     await admin();
     const state = await readState();
-    const musicianId = new URL(req.url).searchParams.get("musician");
+    const params = new URL(req.url).searchParams;
+    const contractId = params.get("contract");
+    if (contractId !== null) {
+      const contract = state.contracts?.find(({ id }) => id === contractId);
+      if (!contract) throw new RequestError("Contract not found.", 404);
+      return json({ contract });
+    }
+    const musicianId = params.get("musician");
     if (musicianId !== null) {
       const profile = state.musicians.find(({ id }) => id === musicianId);
       if (!profile) throw new RequestError("Musician not found.", 404);
@@ -44,7 +54,7 @@ const request = z.discriminatedUnion("action", [
   z.object({ action: z.literal("musician"), data: musicianEditSchema }),
   z.object({
     action: z.literal("invite"),
-    data: z.object({ musicianId: z.string().uuid().optional() }),
+    data: contractTermsSchema,
   }),
   z.object({
     action: z.literal("revoke"),
@@ -84,21 +94,22 @@ export async function POST(req: Request) {
         break;
       }
       case "invite": {
-        if (!state.venue.legalName)
-          throw new RequestError(
-            "Save your venue details before inviting musicians.",
-          );
-        if (
-          input.data.musicianId &&
-          !state.musicians.some((item) => item.id === input.data.musicianId)
-        )
-          throw new RequestError("Musician not found.", 404);
+        const { name, legalName, address, cvr, email, phone } =
+          venueSchema.parse(state.venue);
+        const { accepted, ...terms } = input.data;
+        if (terms.returnBy < today())
+          throw new RequestError("Enter a signing deadline of today or later.");
         const raw = token();
         state.invites.push({
           id: crypto.randomUUID(),
           hash: hash(raw),
-          musicianId: input.data.musicianId,
-          expiresAt: new Date(Date.now() + 90 * 86400000).toISOString(),
+          expiresAt: terms.returnBy + "T23:59:59.999Z",
+          offer: {
+            ...terms,
+            organizer: { name, legalName, address, cvr, email, phone },
+            organizerSignedAt: new Date().toISOString(),
+            template: dmfTemplate,
+          },
         });
         link = "/register/" + raw;
         break;

@@ -769,3 +769,85 @@ label small {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   }
 }
+
+.form-fieldset {
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 10px 12px 0;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+
+.form-fieldset legend {
+  padding-inline: 4px;
+  font-weight: 620;
+}
+
+.contract-signing {
+  padding-block: 16px 8px;
+  border-top: 1px solid var(--rule);
+}
+
+.contract-terms {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr);
+  gap: 8px 12px;
+  margin: 14px 0;
+}
+
+.contract-terms dt {
+  color: var(--muted);
+}
+
+.contract-terms dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+input[type="time"] {
+  display: block;
+  appearance: none;
+  -webkit-appearance: none;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+input[type="time"]::-webkit-date-and-time-value {
+  min-width: 0;
+  text-align: left;
+}
+
+@media print {
+  html,
+  body,
+  .shell,
+  .registration,
+  .dialog {
+    background: white;
+    color: black;
+  }
+
+  .shell > :not(dialog),
+  .registration-intro,
+  .registration .banner,
+  .dialog .close,
+  .print-contract,
+  .dialog::backdrop {
+    display: none !important;
+  }
+
+  .dialog[open],
+  .registration .gate-inner {
+    position: static;
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+    border: 0;
+  }
+
+  .contract-receipt :is(p, dt, dd, a) {
+    color: black;
+  }
+}

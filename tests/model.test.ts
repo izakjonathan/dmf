@@ -4,11 +4,15 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import {
   clientWorkspace,
+  contractTermsSchema,
+  dmfTemplate,
   demoWorkspace,
   isoWeek,
   musicianEditSchema,
+  musicianSchema,
   paymentRecord,
   paymentRecords,
+  performerSignatureSchema,
   tariff,
   updateMusician,
 } from "../lib/model.ts";
@@ -51,9 +55,11 @@ test("workspace responses omit sensitive account and authentication values", () 
   const state = demoWorkspace();
   state.auth = { email: "example@example.com", passwordHash: "internal" };
   state.musicians[0].account = "0000000000";
+  state.musicians[0].iban = "DK5000400440116243";
   const safe = clientWorkspace(state);
   assert.equal("auth" in safe, false);
   assert.equal("account" in safe.musicians[0], false);
+  assert.equal("iban" in safe.musicians[0], false);
 });
 test("Apps Script produces matching totals and retains account numbers as strings", () => {
   const context = { state: demoWorkspace(), result: null as any };
@@ -144,4 +150,71 @@ test("musician edits preserve historical payments and hidden CPR, and reject dup
   assert.equal(state.payments[0].name, first.name);
   assert.equal(state.payments[0].band, first.band);
   assert.match(updateMusician(state, edit) || "", /updated elsewhere/);
+});
+
+test("registration accepts either Danish bank details or a normalized IBAN", () => {
+  const [profile] = demoWorkspace().musicians;
+  assert.equal(musicianSchema.parse(profile).registration, "0000");
+  const international = {
+    ...profile,
+    registration: "",
+    account: "",
+    iban: "dk50 0040 0440 1162 43",
+  };
+  const parsed = musicianSchema.parse(international);
+  assert.equal(parsed.iban, "DK5000400440116243");
+  assert.equal(parsed.registration, "");
+  assert.throws(
+    () =>
+      musicianSchema.parse({ ...international, iban: "DK5000400440116244" }),
+    /valid IBAN/,
+  );
+  assert.throws(
+    () => musicianSchema.parse({ ...international, account: "0000000000" }),
+    /either IBAN or Danish/,
+  );
+});
+
+test("DMF terms require organizer and musician acceptance and store exact fees", () => {
+  const terms = {
+    performerEmail: "test@example.com",
+    performanceDate: "2026-12-03",
+    returnBy: "2026-12-02",
+    start: "22:00",
+    end: "00:00",
+    sets: "2",
+    minutesPerSet: "45",
+    fee: "3150,50",
+    organizerSigner: "Organizer Test",
+  };
+  assert.throws(() => contractTermsSchema.parse(terms), /Confirm/);
+  assert.equal(
+    contractTermsSchema.parse({ ...terms, accepted: "on" }).fee,
+    315050,
+  );
+  assert.throws(
+    () =>
+      contractTermsSchema.parse({
+        ...terms,
+        accepted: "on",
+        payOn: "2026-12-01",
+      }),
+    /payment date/,
+  );
+  assert.throws(
+    () =>
+      performerSignatureSchema.parse({
+        name: "Musician Test",
+        version: dmfTemplate.version,
+      }),
+    /Confirm/,
+  );
+  assert.equal(
+    performerSignatureSchema.parse({
+      name: "Musician Test",
+      accepted: "on",
+      version: dmfTemplate.version,
+    }).name,
+    "Musician Test",
+  );
 });

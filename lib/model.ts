@@ -24,6 +24,19 @@ export const venueSchema = z.object({
   reference: text,
   collectCpr: z.boolean(),
 });
+export function validIban(iban: string) {
+  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(iban)) return false;
+  let remainder = 0;
+  for (const character of iban.slice(4) + iban.slice(0, 4)) {
+    const code = character.charCodeAt(0);
+    remainder =
+      code >= 65
+        ? (remainder * 100 + code - 55) % 97
+        : (remainder * 10 + code - 48) % 97;
+  }
+  return remainder === 1;
+}
+
 export const musicianSchema = z
   .object({
     name: text.min(2),
@@ -34,17 +47,108 @@ export const musicianSchema = z
     payee: z.enum(["Individual", "Business"]),
     cvr: z.string().regex(/^(\d{8})?$/),
     cpr: z.string().regex(/^(\d{6}-?\d{4})?$/),
-    registration: z
+    registration: z.string().default(""),
+    account: z.string().default(""),
+    iban: z
       .string()
-      .regex(/^\d{4}$/, "Enter the four-digit bank registration number."),
-    account: z
+      .max(100)
+      .default("")
+      .transform((value) => value.replace(/\s+/g, "").toUpperCase()),
+  })
+  .superRefine((value, ctx) => {
+    function issue(path: string, message: string) {
+      ctx.addIssue({ code: "custom", path: [path], message });
+    }
+    if (value.payee === "Business" && !value.cvr)
+      issue("cvr", "Enter the business CVR.");
+    if (value.iban) {
+      if (!validIban(value.iban)) issue("iban", "Enter a valid IBAN.");
+      if (value.registration || value.account)
+        issue("iban", "Choose either IBAN or Danish bank details.");
+      return;
+    }
+    if (!/^\d{4}$/.test(value.registration))
+      issue("registration", "Enter the four-digit bank registration number.");
+    if (!/^\d{6,10}$/.test(value.account))
+      issue("account", "Enter a bank account number with 6–10 digits.");
+  });
+
+export const dmfTemplate = {
+  version: "dmf-standardkontrakt-red-2019",
+  url: "https://dmf.dk/sites/default/files/paragraph/field_files/Standardkontrakt%20R%C3%98D.pdf",
+} as const;
+
+const clock = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time.");
+const accepted = z.literal("on", {
+  message: "Confirm that you agree to the contract.",
+});
+export const contractTermsSchema = z
+  .object({
+    performerEmail: email,
+    performanceDate: date,
+    start: clock,
+    end: clock,
+    getIn: z.union([clock, z.literal("")]).default(""),
+    soundcheck: z.union([clock, z.literal("")]).default(""),
+    sets: z.coerce.number().int().min(1).max(30),
+    minutesPerSet: z.coerce.number().int().min(1).max(720),
+    fee: z
       .string()
-      .regex(/^\d{6,10}$/, "Enter a bank account number with 6–10 digits."),
+      .trim()
+      .regex(/^\d{1,7}([.,]\d{1,2})?$/, "Enter the fee in DKK.")
+      .transform((value) => Math.round(Number(value.replace(",", ".")) * 100))
+      .refine((value) => value > 0, "Enter a fee greater than zero."),
+    payOn: z.union([date, z.literal("")]).default(""),
+    returnBy: date,
+    specialTerms: z.string().trim().max(2000).default(""),
+    organizerSigner: text.min(2, "Enter the organizer signer’s full name."),
+    accepted,
   })
   .refine(
-    (value) => value.payee !== "Business" || value.cvr,
-    "Enter the business CVR.",
+    (value) => value.start !== value.end,
+    "Enter different start and end times.",
+  )
+  .refine(
+    (value) => !value.payOn || value.payOn >= value.performanceDate,
+    "Enter a payment date on or after the performance.",
+  )
+  .refine(
+    (value) => value.returnBy <= value.performanceDate,
+    "The signing deadline must be on or before the performance.",
   );
+
+export const performerSignatureSchema = z.object({
+  name: text.min(2, "Enter your full name to sign."),
+  accepted,
+  version: z.literal(dmfTemplate.version),
+});
+
+export type ContractOffer = Omit<
+  z.infer<typeof contractTermsSchema>,
+  "accepted"
+> & {
+  organizer: Pick<
+    Venue,
+    "name" | "legalName" | "address" | "cvr" | "email" | "phone"
+  >;
+  organizerSignedAt: string;
+  template: typeof dmfTemplate;
+};
+
+export type SignedContract = {
+  id: string;
+  musicianId: string;
+  offer: ContractOffer;
+  performer: Pick<
+    Musician,
+    "name" | "email" | "address" | "phone" | "band" | "cvr" | "payee"
+  >;
+  performerSigner: string;
+  performerSignedAt: string;
+};
+
 export const paymentSchema = z.object({
   id: z.string().uuid(),
   musicianId: z.string().uuid(),
@@ -57,7 +161,8 @@ export const paymentSchema = z.object({
   notes: z.string().trim().max(2000),
 });
 export type Venue = z.infer<typeof venueSchema>;
-export type Musician = z.infer<typeof musicianSchema> & {
+export type Musician = Omit<z.infer<typeof musicianSchema>, "iban"> & {
+  iban?: string;
   id: string;
   createdAt: string;
   updatedAt: string;
@@ -75,6 +180,8 @@ export type Invite = {
   musicianId?: string;
   expiresAt: string;
   revoked?: boolean;
+  offer?: ContractOffer;
+  signedAt?: string;
 };
 export type Workspace = {
   revision: number;
@@ -82,6 +189,7 @@ export type Workspace = {
   musicians: Musician[];
   payments: Payment[];
   invites: Invite[];
+  contracts?: SignedContract[];
   auth?: { email: string; passwordHash: string };
   attempts?: { key: string; at: number }[];
 };
@@ -241,9 +349,18 @@ export function clientWorkspace(state: Workspace) {
     revision: state.revision,
     venue: state.venue,
     payments: state.payments,
-    invites: state.invites.map(({ hash, ...invite }) => invite),
+    invites: state.invites.map(({ hash, offer, ...invite }) => ({
+      ...invite,
+      performanceDate: offer?.performanceDate,
+      performerEmail: offer?.performerEmail,
+    })),
+    contracts: (state.contracts ?? []).map((contract) => ({
+      id: contract.id,
+      performer: contract.performer.name,
+      date: contract.offer.performanceDate,
+    })),
     musicians: state.musicians.map(
-      ({ cpr, registration, account, ...musician }) => musician,
+      ({ cpr, registration, account, iban, ...musician }) => musician,
     ),
   };
 }
