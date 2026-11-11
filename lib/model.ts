@@ -67,6 +67,7 @@ export type Payment = z.infer<typeof paymentSchema> & {
   venue: string;
   recordedAt: string;
   voidReason?: string;
+  batchId?: string;
 };
 export type Invite = {
   id: string;
@@ -135,7 +136,11 @@ export function paymentRecord(state: Workspace, input: unknown) {
     (item) => item.id === payment.musicianId,
   );
   if (!musician) throw Error("Select a registered musician.");
-  if (state.payments.some((item) => item.id === payment.id))
+  if (
+    state.payments.some(
+      (item) => item.id === payment.id || item.batchId === payment.id,
+    )
+  )
     throw Error("This payment is already recorded.");
   const paid = state.payments
     .filter((item) => item.musicianId === musician.id)
@@ -149,6 +154,88 @@ export function paymentRecord(state: Workspace, input: unknown) {
     recordedAt: new Date().toISOString(),
   };
 }
+const bandPaymentSchema = paymentSchema.omit({ musicianId: true }).extend({
+  target: z.literal("band"),
+  band: text.min(1),
+  kind: z.literal("Payment"),
+  memberIds: z.array(z.string().uuid()).min(1),
+});
+
+export const bandKey = (band: string) =>
+  band.trim().replace(/\s+/g, " ").toLowerCase();
+
+export function paymentRecords(state: Workspace, input: unknown): Payment[] {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    !("target" in input) ||
+    input.target !== "band"
+  )
+    return [paymentRecord(state, input)];
+
+  const { id, memberIds, ...details } = bandPaymentSchema.parse(input);
+  if (
+    state.payments.some(
+      (payment) => payment.batchId === id || payment.id === id,
+    )
+  )
+    throw Error("This band payment is already recorded.");
+  const members = state.musicians.filter(
+    (musician) => bandKey(musician.band) === bandKey(details.band),
+  );
+  const selected = new Set(memberIds);
+  if (
+    memberIds.length !== selected.size ||
+    members.length !== selected.size ||
+    !members.every(({ id }) => selected.has(id))
+  )
+    throw Error(
+      "This band’s membership changed. Refresh before recording the payment.",
+    );
+
+  return members.map((musician) => ({
+    ...paymentRecord(state, {
+      ...details,
+      band: members[0].band.trim(),
+      id: crypto.randomUUID(),
+      musicianId: musician.id,
+    }),
+    batchId: id,
+  }));
+}
+
+export const musicianEditSchema = z.object({
+  id: z.string().uuid(),
+  updatedAt: z.string(),
+  profile: musicianSchema,
+});
+
+export function updateMusician(
+  state: Workspace,
+  input: z.infer<typeof musicianEditSchema>,
+) {
+  const index = state.musicians.findIndex(({ id }) => id === input.id);
+  const current = state.musicians[index];
+  if (!current) return "Musician not found.";
+  if (current.updatedAt !== input.updatedAt)
+    return "This musician was updated elsewhere. Close and reopen their details.";
+  if (
+    state.musicians.some(
+      ({ id, email }) =>
+        id !== input.id && email.toLowerCase() === input.profile.email,
+    )
+  )
+    return "That email is already registered to another musician.";
+
+  state.musicians[index] = {
+    ...current,
+    ...input.profile,
+    cpr: state.venue.collectCpr ? input.profile.cpr : current.cpr,
+    updatedAt: new Date().toISOString(),
+  };
+  return null;
+}
+
 export function clientWorkspace(state: Workspace) {
   return {
     revision: state.revision,
@@ -188,8 +275,8 @@ export function demoWorkspace(): Workspace {
       payee: "Individual",
       cpr: "",
       cvr: "",
-      account: "",
-      registration: "",
+      account: "0000000000",
+      registration: "0000",
       createdAt: "2026-11-01",
       updatedAt: "2026-11-01",
     });

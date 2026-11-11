@@ -3,20 +3,25 @@ import {
   useCallback,
   useEffect,
   useState,
+  useRef,
   type FormEvent,
   type ReactNode,
 } from "react";
 import {
+  bandKey,
   clientWorkspace,
   demoWorkspace,
   empty,
   isoWeek,
   money,
   net,
-  paymentRecord,
+  musicianEditSchema,
+  paymentRecords,
   tariff,
   today,
+  updateMusician,
   type ClientWorkspace,
+  type Musician,
   type Payment,
   type Venue,
 } from "@/lib/model";
@@ -29,8 +34,8 @@ type Page =
   | "Venue"
   | "Google Sheet";
 type Modal =
-  | { kind: "payment"; musicianId?: string }
-  | { kind: "link"; url: string }
+  | { kind: "payment" }
+  | { kind: "musician"; profile: Musician; collectCpr: boolean }
   | { kind: "void"; payment: Payment };
 const pages: Page[] = [
   "Overview",
@@ -90,6 +95,11 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [copyUrl, setCopyUrl] = useState("");
+  const dialog = useRef<HTMLDialogElement>(null);
+  const actions = useRef<HTMLDivElement>(null);
+  const actionToggle = useRef<HTMLButtonElement>(null);
   const data = demo ? clientWorkspace(sample) : workspace;
   const start = useCallback(async () => {
     setError("");
@@ -124,7 +134,32 @@ export default function Dashboard() {
     const timeout = setTimeout(() => setNotice(""), 4500);
     return () => clearTimeout(timeout);
   }, [notice]);
+  useEffect(() => {
+    if (modal && !dialog.current?.open) dialog.current?.showModal();
+  }, [modal]);
+  useEffect(() => {
+    if (!actionsOpen) return;
+    function dismiss(event: PointerEvent) {
+      if (
+        event.target instanceof Node &&
+        !actions.current?.contains(event.target)
+      )
+        setActionsOpen(false);
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setActionsOpen(false);
+      actionToggle.current?.focus();
+    }
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [actionsOpen]);
   function go(next: Page) {
+    setActionsOpen(false);
     setPage(next);
     setSearch("");
     setError("");
@@ -137,33 +172,122 @@ export default function Dashboard() {
         const copy = structuredClone(sample);
         if (action === "venue") copy.venue = values as Venue;
         if (action === "payment")
-          copy.payments.push(paymentRecord(copy, values));
+          copy.payments.push(...paymentRecords(copy, values));
+        if (action === "musician") {
+          const problem = updateMusician(
+            copy,
+            musicianEditSchema.parse(values),
+          );
+          if (problem) throw Error(problem);
+        }
         if (action === "void") {
           const { id, reason } = values as { id: string; reason: string };
           const item = copy.payments.find((p) => p.id === id);
           if (item) item.voidReason = reason;
         }
-        if (action === "invite") {
-          setModal({ kind: "link", url: location.origin + "/register/demo" });
-          return;
-        }
         setSample(copy);
         setNotice("Saved in the demo.");
+        dialog.current?.close();
         setModal(null);
         return;
       }
       const result = await request("/api/workspace", { action, data: values });
       setWorkspace(result.workspace);
-      if (result.link) {
-        setModal({ kind: "link", url: location.origin + result.link });
-        return;
-      }
+      dialog.current?.close();
       setModal(null);
       setNotice("Saved to Google Sheets.");
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+  async function editMusician(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = demo
+        ? {
+            profile: sample.musicians.find((musician) => musician.id === id),
+            collectCpr: sample.venue.collectCpr,
+          }
+        : await request("/api/workspace?musician=" + encodeURIComponent(id));
+      if (!result.profile) throw Error("Musician not found.");
+      setModal({
+        kind: "musician",
+        profile: result.profile,
+        collectCpr: result.collectCpr,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function copyRegistration() {
+    if (!data.venue.legalName) {
+      go("Venue");
+      setError("Save your venue details before getting a registration link.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const link = copyUrl
+      ? Promise.resolve(copyUrl)
+      : (async () => {
+          if (demo) return location.origin + "/register/demo";
+          const result = await request("/api/workspace", {
+            action: "invite",
+            data: {},
+          });
+          setWorkspace(result.workspace);
+          return location.origin + result.link;
+        })();
+    // Safari requires the clipboard write itself to start in the click handler.
+    let clipboard: Promise<boolean> | undefined;
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        const clipboardData = link.then(
+          (url) => new Blob([url], { type: "text/plain" }),
+        );
+        void clipboardData.catch(() => {});
+        clipboard = navigator.clipboard
+          .write([new ClipboardItem({ "text/plain": clipboardData })])
+          .then(
+            () => true,
+            () => false,
+          );
+      }
+    } catch {
+      // Try the plain-text clipboard API after the link is ready.
+    }
+    try {
+      const url = await link;
+      if (!(await clipboard)) {
+        try {
+          await navigator.clipboard.writeText(url);
+        } catch {
+          setCopyUrl(url);
+          setActionsOpen(true);
+          return;
+        }
+      }
+      setCopyUrl("");
+      setActionsOpen(false);
+      actionToggle.current?.focus();
+      setNotice("Registration link copied.");
+    } catch (e) {
+      setActionsOpen(false);
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function closeModal() {
+    if (!busy) {
+      setError("");
+      dialog.current?.close();
+      setModal(null);
     }
   }
   async function signIn(event: FormEvent<HTMLFormElement>) {
@@ -308,6 +432,32 @@ export default function Dashboard() {
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
+  const sortedPayments = [...data.payments]
+    .reverse()
+    .sort(
+      (a, b) =>
+        b.paidOn.localeCompare(a.paidOn) ||
+        b.recordedAt.localeCompare(a.recordedAt),
+    );
+  const history = sortedPayments.filter((payment) =>
+    [
+      payment.name,
+      payment.band,
+      payment.paidOn,
+      payment.reference,
+      payment.kind,
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(search.trim().toLowerCase()),
+  );
+  const paidByMusician = new Map<string, number>();
+  for (const payment of data.payments) {
+    paidByMusician.set(
+      payment.musicianId,
+      (paidByMusician.get(payment.musicianId) ?? 0) + net(payment),
+    );
+  }
   const paid = (prefix: string) =>
     data.payments
       .filter((p) => p.paidOn.startsWith(prefix))
@@ -315,10 +465,14 @@ export default function Dashboard() {
   return (
     <div className="shell">
       <header className="workspace-header">
-        <span className="eyebrow">{data.venue.name || "Stagebook"}</span>
+        <h1>{page === "Overview" ? "Musician payments" : page}</h1>
         <button
           className="secondary"
+          disabled={busy}
           onClick={async () => {
+            setActionsOpen(false);
+            setCopyUrl("");
+            go("Overview");
             if (demo) {
               setDemo(false);
               return;
@@ -331,12 +485,6 @@ export default function Dashboard() {
         </button>
       </header>
       <main className="main">
-        <div className="workspace-title">
-          <p className="eyebrow">
-            {demo ? "Demo workspace" : "Venue workspace"}
-          </p>
-          <h1>{page === "Overview" ? "Musician payments" : page}</h1>
-        </div>
         <nav aria-label="Workspace">
           {pages.map((item) => (
             <button
@@ -349,39 +497,6 @@ export default function Dashboard() {
           ))}
         </nav>
         <section className="content">
-          <div className="heading">
-            <p>
-              {
-                {
-                  Overview:
-                    "Invite musicians, then record payments as they’re made.",
-                  Musicians: "Invite musicians to submit their own details.",
-                  Payments: "Record and review payments to your musicians.",
-                  Reports: "Review actual payments by date, band and musician.",
-                  Venue:
-                    "Enter your organizer details once to reuse them throughout the app.",
-                  "Google Sheet":
-                    "Review the workbook and manage registration links.",
-                }[page]
-              }
-            </p>
-            {page === "Musicians" ? (
-              <button disabled={busy} onClick={() => void mutate("invite", {})}>
-                + Registration link
-              </button>
-            ) : (
-              ["Overview", "Payments"].includes(page) && (
-                <button
-                  onClick={() => {
-                    setError("");
-                    setModal({ kind: "payment" });
-                  }}
-                >
-                  + Add payment
-                </button>
-              )
-            )}
-          </div>
           {error && !modal && (
             <p className="error" role="alert">
               {error}
@@ -391,9 +506,9 @@ export default function Dashboard() {
             <>
               <div className="stats">
                 {[
-                  ["Registered musicians", data.musicians.length],
-                  ["Paid this month", money(paid(today().slice(0, 7)))],
-                  ["Paid this year", money(paid(today().slice(0, 4)))],
+                  ["Musicians", data.musicians.length],
+                  ["This month", money(paid(today().slice(0, 7)))],
+                  ["This year", money(paid(today().slice(0, 4)))],
                 ].map(([label, value]) => (
                   <div className="panel stat" key={label}>
                     <span>{label}</span>
@@ -401,29 +516,14 @@ export default function Dashboard() {
                   </div>
                 ))}
               </div>
-              <section className="panel registration-action">
-                <h2>Register musicians</h2>
-                <p>
-                  Save your venue details, then share a link so musicians can
-                  enter their own information.
-                </p>
-                <button
-                  className="text-action"
-                  onClick={() =>
-                    data.venue.legalName
-                      ? void mutate("invite", {})
-                      : go("Venue")
-                  }
-                  disabled={busy}
-                >
-                  {data.venue.legalName
-                    ? "Get registration link"
-                    : "Set up venue"}
-                </button>
-              </section>
               <section className="panel">
-                <h2>Recent payments</h2>
-                <Payments rows={[...data.payments].reverse().slice(0, 5)} />
+                <div className="section-title">
+                  <h2>Recent payments</h2>
+                  <button className="link" onClick={() => go("Payments")}>
+                    View all payments
+                  </button>
+                </div>
+                <Payments rows={sortedPayments.slice(0, 5)} />
               </section>
             </>
           )}
@@ -436,43 +536,26 @@ export default function Dashboard() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
-              <div className="cards">
+              <ul className="musician-list">
                 {matching.map((m) => (
-                  <article className="panel musician" key={m.id}>
-                    <h2>{m.name}</h2>
-                    <p>{m.band || "Independent musician"}</p>
-                    <div className="subline">
-                      <span>Details submitted</span>
-                      <strong>
-                        {money(
-                          data.payments
-                            .filter((p) => p.musicianId === m.id)
-                            .reduce((sum, p) => sum + net(p), 0),
-                        )}{" "}
-                        paid
-                      </strong>
-                    </div>
-                    <div className="row">
-                      <button
-                        onClick={() =>
-                          setModal({ kind: "payment", musicianId: m.id })
-                        }
-                      >
-                        + Add payment
-                      </button>
-                      <button
-                        className="secondary"
-                        disabled={busy}
-                        onClick={() =>
-                          void mutate("invite", { musicianId: m.id })
-                        }
-                      >
-                        Update link
-                      </button>
-                    </div>
-                  </article>
+                  <li key={m.id}>
+                    <button
+                      className="musician-row"
+                      disabled={busy}
+                      onClick={() => void editMusician(m.id)}
+                    >
+                      <span className="musician-name">
+                        <strong>{m.name}</strong>
+                        <small>{m.band || "Independent musician"}</small>
+                      </span>
+                      <span className="musician-edit">
+                        {money(paidByMusician.get(m.id) ?? 0)}
+                        <small>Edit</small>
+                      </span>
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ul>
               {!matching.length && (
                 <div className="panel">
                   No matching musicians. Share a registration link to add
@@ -482,11 +565,22 @@ export default function Dashboard() {
             </>
           )}
           {page === "Payments" && (
-            <section className="panel">
-              <Payments
-                rows={[...data.payments].reverse()}
-                onVoid={(payment) => setModal({ kind: "void", payment })}
+            <section aria-label="Payment history">
+              <input
+                className="search"
+                placeholder="Search payments"
+                aria-label="Search payments"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
               />
+              {history.length || !search.trim() ? (
+                <Payments
+                  rows={history}
+                  onVoid={(payment) => setModal({ kind: "void", payment })}
+                />
+              ) : (
+                <p>No payments match your search.</p>
+              )}
             </section>
           )}
           {page === "Reports" && <Reports workspace={data} />}
@@ -555,42 +649,76 @@ export default function Dashboard() {
           )}
         </section>
       </main>
+      <div ref={actions} className="quick-actions">
+        <button
+          ref={actionToggle}
+          className="quick-toggle"
+          aria-label={
+            actionsOpen ? "Close quick actions" : "Open quick actions"
+          }
+          aria-expanded={actionsOpen}
+          aria-controls={actionsOpen ? "workspace-actions" : undefined}
+          onClick={() => setActionsOpen(!actionsOpen)}
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+        {actionsOpen && (
+          <div
+            id="workspace-actions"
+            className="quick-menu"
+            aria-label="Workspace actions"
+          >
+            <button
+              disabled={busy}
+              onClick={() => {
+                setActionsOpen(false);
+                actionToggle.current?.focus();
+                setError("");
+                setModal({ kind: "payment" });
+              }}
+            >
+              Add payment
+            </button>
+            <button disabled={busy} onClick={() => void copyRegistration()}>
+              Get registration link
+            </button>
+            {copyUrl && (
+              <label className="clipboard-fallback">
+                Copy this link manually
+                <input
+                  value={copyUrl}
+                  readOnly
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+              </label>
+            )}
+          </div>
+        )}
+      </div>
       {notice && (
         <div className="toast" role="status">
           {notice}
         </div>
       )}
       {modal && (
-        <div
-          className="overlay"
-          onClick={() => {
-            if (!busy) {
-              setError("");
-              setModal(null);
-            }
+        <dialog
+          ref={dialog}
+          className="dialog"
+          aria-labelledby="workspace-dialog-title"
+          onCancel={(event) => {
+            event.preventDefault();
+            closeModal();
+          }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeModal();
           }}
         >
-          <section
-            className="dialog panel"
-            role="dialog"
-            aria-modal="true"
-            aria-label={
-              modal.kind === "payment"
-                ? "Add payment"
-                : modal.kind === "link"
-                  ? "Registration link"
-                  : "Void payment"
-            }
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="dialog-inner">
             <button
               className="close secondary"
               aria-label="Close"
               disabled={busy}
-              onClick={() => {
-                setError("");
-                setModal(null);
-              }}
+              onClick={closeModal}
             >
               ×
             </button>
@@ -602,44 +730,23 @@ export default function Dashboard() {
             {modal.kind === "payment" && (
               <PaymentForm
                 workspace={data}
-                musicianId={modal.musicianId}
                 busy={busy}
                 save={(p) => void mutate("payment", p)}
               />
             )}
-            {modal.kind === "link" && (
-              <>
-                <h2>Musician registration link</h2>
-                <p>Share this link with the musician. It expires in 90 days.</p>
-                <input
-                  readOnly
-                  aria-label="Registration link"
-                  value={modal.url}
-                  onFocus={(e) => e.currentTarget.select()}
-                />
-                <div className="row">
-                  <button
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(modal.url);
-                        setNotice("Link copied.");
-                      } catch {
-                        setError("Select and copy the link above.");
-                      }
-                    }}
-                  >
-                    Copy link
-                  </button>
-                  <a
-                    className="button secondary"
-                    href={modal.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open form
-                  </a>
-                </div>
-              </>
+            {modal.kind === "musician" && (
+              <MusicianEditor
+                profile={modal.profile}
+                collectCpr={modal.collectCpr}
+                busy={busy}
+                save={(profile) =>
+                  void mutate("musician", {
+                    id: modal.profile.id,
+                    updatedAt: modal.profile.updatedAt,
+                    profile,
+                  })
+                }
+              />
             )}
             {modal.kind === "void" && (
               <form
@@ -650,7 +757,7 @@ export default function Dashboard() {
                   })
                 }
               >
-                <h2>Void payment</h2>
+                <h2 id="workspace-dialog-title">Void payment</h2>
                 <p>
                   {modal.payment.name} · {money(modal.payment.amount)}
                 </p>
@@ -660,184 +767,340 @@ export default function Dashboard() {
                 <button disabled={busy}>Void payment</button>
               </form>
             )}
-          </section>
-        </div>
+          </div>
+        </dialog>
       )}
     </div>
   );
 }
+const paymentDate = new Intl.DateTimeFormat("en-DK", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
 function Payments({
   rows,
   onVoid,
 }: {
   rows: Payment[];
-  onVoid?: (p: Payment) => void;
+  onVoid?: (payment: Payment) => void;
 }) {
-  if (!rows.length) return <p className="empty">No payments recorded.</p>;
+  if (!rows.length) return <p>No payments recorded.</p>;
   return (
-    <div className="scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Musician</th>
-            <th>Band</th>
-            <th>Paid on</th>
-            <th>Amount</th>
-            {onVoid && <th />}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((p) => (
-            <tr key={p.id}>
-              <td>
-                <strong>{p.name}</strong>
-                <small>
-                  {p.reference}
-                  {p.voidReason
-                    ? " · Voided"
-                    : p.kind === "Refund"
-                      ? " · Refund"
-                      : ""}
-                </small>
-              </td>
-              <td>{p.band || "—"}</td>
-              <td>{p.paidOn}</td>
-              <td>{money(net(p))}</td>
-              {onVoid && (
-                <td>
-                  {!p.voidReason && (
-                    <button className="link" onClick={() => onVoid(p)}>
-                      Void
-                    </button>
-                  )}
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ul className="payment-list">
+      {rows.map((payment) => (
+        <li className="payment-row" key={payment.id}>
+          <div>
+            <strong>{payment.name}</strong>
+            {payment.band && <small>{payment.band}</small>}
+            {onVoid && payment.reference && <small>{payment.reference}</small>}
+            {payment.voidReason && (
+              <small>Voided{onVoid ? " · " + payment.voidReason : ""}</small>
+            )}
+            {!payment.voidReason && payment.kind === "Refund" && (
+              <small>Refund</small>
+            )}
+          </div>
+          <div className="payment-value">
+            <strong className={payment.voidReason ? "void-amount" : undefined}>
+              {money(payment.voidReason ? payment.amount : net(payment))}
+            </strong>
+            <time dateTime={payment.paidOn}>
+              {paymentDate.format(new Date(payment.paidOn + "T12:00:00Z"))}
+            </time>
+            {onVoid && !payment.voidReason && (
+              <button
+                className="link"
+                onClick={() => onVoid(payment)}
+                aria-label={"Void payment for " + payment.name}
+              >
+                Void
+              </button>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
+
 function PaymentForm({
   workspace,
-  musicianId,
   busy,
   save,
 }: {
   workspace: ClientWorkspace;
-  musicianId?: string;
   busy: boolean;
   save: (p: object) => void;
 }) {
-  const [selected, setSelected] = useState(
-    musicianId || workspace.musicians[0]?.id || "",
-  );
-  const [band, setBand] = useState(
-    workspace.musicians.find((m) => m.id === selected)?.band || "",
-  );
+  const bands = new Map<
+    string,
+    { name: string; members: ClientWorkspace["musicians"] }
+  >();
+  for (const musician of workspace.musicians) {
+    const key = bandKey(musician.band);
+    if (!key) continue;
+    const group = bands.get(key);
+    if (group) group.members.push(musician);
+    else bands.set(key, { name: musician.band.trim(), members: [musician] });
+  }
+  const [selected, setSelected] = useState(workspace.musicians[0]?.id || "");
+  const [band, setBand] = useState(workspace.musicians[0]?.band || "");
   const [date, setDate] = useState(today);
   const [amount, setAmount] = useState(() => String(tariff(today()) / 100));
   const [id] = useState(() => crypto.randomUUID());
-  if (!workspace.musicians.length)
-    return (
-      <>
-        <h2>Add payment</h2>
-        <p>A musician must complete the registration form first.</p>
-      </>
-    );
+  const group = selected.startsWith("band:")
+    ? bands.get(selected.slice(5))
+    : undefined;
+  const amountInOre = Math.round(Number(amount) * 100);
   return (
-    <form
-      onSubmit={(event) =>
-        save({
-          ...fields(event),
-          id,
-          musicianId: selected,
-          amount: Math.round(Number(amount) * 100),
-        })
-      }
-    >
-      <h2>Add payment</h2>
-      <p>
-        {workspace.venue.name} · {workspace.venue.legalName}
-      </p>
-      <Field label="Musician">
-        <select
-          value={selected}
-          onChange={(e) => {
-            setSelected(e.target.value);
-            setBand(
-              workspace.musicians.find((m) => m.id === e.target.value)?.band ||
-                "",
+    <>
+      <h2 id="workspace-dialog-title">Add payment</h2>
+      {!workspace.musicians.length ? (
+        <p>A musician must complete the registration form first.</p>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            const values = { ...fields(event), id, amount: amountInOre };
+            save(
+              group
+                ? {
+                    ...values,
+                    target: "band",
+                    band: group.name,
+                    memberIds: group.members.map(({ id }) => id),
+                    kind: "Payment",
+                  }
+                : { ...values, musicianId: selected },
             );
           }}
         >
-          {workspace.musicians.map((m) => (
-            <option value={m.id} key={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </select>
-      </Field>
+          <Field label="Payee">
+            <select
+              value={selected}
+              onChange={(event) => {
+                const next = event.target.value;
+                setSelected(next);
+                setBand(
+                  workspace.musicians.find(({ id }) => id === next)?.band || "",
+                );
+              }}
+            >
+              <optgroup label="Musicians">
+                {workspace.musicians.map((musician) => (
+                  <option value={musician.id} key={musician.id}>
+                    {musician.name}
+                  </option>
+                ))}
+              </optgroup>
+              {bands.size > 0 && (
+                <optgroup label="Bands">
+                  {Array.from(bands, ([key, band]) => (
+                    <option value={"band:" + key} key={key}>
+                      {band.name} ({band.members.length})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </Field>
+          <div className="grid">
+            <Field label={group ? "Amount per member (DKK)" : "Amount (DKK)"}>
+              <input
+                required
+                type="number"
+                min="0.01"
+                max="1000000"
+                step="0.01"
+                name="amount"
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </Field>
+            <Field label="Date paid">
+              <input
+                name="paidOn"
+                type="date"
+                required
+                defaultValue={today()}
+              />
+            </Field>
+            {!group && (
+              <Field label="Band">
+                <input
+                  name="band"
+                  value={band}
+                  onChange={(event) => setBand(event.target.value)}
+                />
+              </Field>
+            )}
+            <Field label="Performance date">
+              <input
+                name="performedOn"
+                type="date"
+                required
+                value={date}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  if (amountInOre === tariff(date))
+                    setAmount(String(tariff(next) / 100));
+                  setDate(next);
+                }}
+              />
+            </Field>
+            <Field label="Payment reference">
+              <input
+                name="reference"
+                defaultValue={workspace.venue.reference}
+              />
+            </Field>
+            {!group && (
+              <Field label="Entry type">
+                <select name="kind">
+                  <option>Payment</option>
+                  <option>Refund</option>
+                </select>
+              </Field>
+            )}
+          </div>
+          <Field label="Notes (optional)">
+            <textarea name="notes" rows={2} />
+          </Field>
+          {tariff(date) > 0 && (
+            <p className="fine">
+              DMF reference · {money(tariff(date))} per musician
+            </p>
+          )}
+          {group && (
+            <div className="band-total">
+              <p>{group.members.map(({ name }) => name).join(", ")}</p>
+              <strong>
+                {group.members.length} × {money(amountInOre)} ={" "}
+                {money(group.members.length * amountInOre)}
+              </strong>
+            </div>
+          )}
+          <button disabled={busy}>
+            {busy ? "Saving…" : group ? "Save band payment" : "Save payment"}
+          </button>
+        </form>
+      )}
+    </>
+  );
+}
+
+function MusicianEditor({
+  profile,
+  collectCpr,
+  busy,
+  save,
+}: {
+  profile: Musician;
+  collectCpr: boolean;
+  busy: boolean;
+  save: (profile: object) => void;
+}) {
+  const [payee, setPayee] = useState(profile.payee);
+  return (
+    <form
+      onSubmit={(event) =>
+        save({ cpr: "", cvr: profile.cvr, ...fields(event) })
+      }
+    >
+      <h2 id="workspace-dialog-title">Edit musician</h2>
       <div className="grid">
-        <Field label="Amount (DKK)">
+        <Field label="Legal name">
           <input
+            name="name"
+            defaultValue={profile.name}
             required
-            type="number"
-            min="0.01"
-            step="0.01"
-            name="amount"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
+            minLength={2}
           />
         </Field>
-        <Field label="Date paid">
-          <input name="paidOn" type="date" required defaultValue={today()} />
+        <Field label="Email">
+          <input
+            type="email"
+            name="email"
+            defaultValue={profile.email}
+            required
+          />
+        </Field>
+        <Field label="Phone">
+          <input type="tel" name="phone" defaultValue={profile.phone} />
         </Field>
         <Field label="Band">
-          <input
-            name="band"
-            value={band}
-            onChange={(e) => setBand(e.target.value)}
-          />
+          <input name="band" defaultValue={profile.band} />
         </Field>
-        <Field label="Performance date">
+        <Field label="Full address">
           <input
-            name="performedOn"
+            name="address"
+            defaultValue={profile.address}
             required
-            type="date"
-            value={date}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (Number(amount) * 100 === tariff(date))
-                setAmount(String(tariff(next) / 100));
-              setDate(next);
-            }}
+            minLength={5}
           />
         </Field>
-        <Field label="Payment reference">
-          <input name="reference" defaultValue={workspace.venue.reference} />
-        </Field>
-        <Field label="Entry type">
-          <select name="kind">
-            <option>Payment</option>
-            <option>Refund</option>
+        <Field label="Payment recipient">
+          <select
+            name="payee"
+            value={payee}
+            onChange={(event) =>
+              setPayee(event.target.value as Musician["payee"])
+            }
+          >
+            <option>Individual</option>
+            <option>Business</option>
           </select>
         </Field>
+        {payee === "Business" && (
+          <Field label="CVR">
+            <input
+              name="cvr"
+              defaultValue={profile.cvr}
+              required
+              inputMode="numeric"
+              pattern="[0-9]{8}"
+            />
+          </Field>
+        )}
+        {collectCpr && (
+          <Field label="CPR (optional)">
+            <input
+              name="cpr"
+              defaultValue={profile.cpr}
+              inputMode="numeric"
+              pattern="[0-9]{6}-?[0-9]{4}"
+              autoComplete="off"
+            />
+          </Field>
+        )}
+        <Field label="Bank registration number">
+          <input
+            name="registration"
+            defaultValue={profile.registration}
+            required
+            inputMode="numeric"
+            pattern="[0-9]{4}"
+            autoComplete="off"
+          />
+        </Field>
+        <Field label="Bank account number">
+          <input
+            name="account"
+            defaultValue={profile.account}
+            required
+            inputMode="numeric"
+            pattern="[0-9]{6,10}"
+            autoComplete="off"
+          />
+        </Field>
       </div>
-      <Field label="Notes (optional)">
-        <textarea name="notes" rows={2} />
-      </Field>
-      {tariff(date) > 0 && (
-        <p className="fine">
-          DMF reference for this performance date is {money(tariff(date))} per
-          musician.
-        </p>
-      )}
-      <button disabled={busy}>{busy ? "Saving…" : "Save payment"}</button>
+      <button disabled={busy}>{busy ? "Saving…" : "Save musician"}</button>
     </form>
   );
 }
+
 function VenueForm({
   venue,
   busy,

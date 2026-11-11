@@ -11,13 +11,27 @@ import {
   token,
   writeState,
 } from "@/lib/server";
-import { clientWorkspace, net, paymentRecord, venueSchema } from "@/lib/model";
+import {
+  clientWorkspace,
+  musicianEditSchema,
+  net,
+  paymentRecords,
+  updateMusician,
+  venueSchema,
+} from "@/lib/model";
 export const maxDuration = 60;
-export async function GET() {
+export async function GET(req: Request) {
   try {
     await admin();
+    const state = await readState();
+    const musicianId = new URL(req.url).searchParams.get("musician");
+    if (musicianId !== null) {
+      const profile = state.musicians.find(({ id }) => id === musicianId);
+      if (!profile) throw new RequestError("Musician not found.", 404);
+      return json({ profile, collectCpr: state.venue.collectCpr });
+    }
     return json({
-      workspace: clientWorkspace(await readState()),
+      workspace: clientWorkspace(state),
       sheet: spreadsheet(),
     });
   } catch (error) {
@@ -27,6 +41,7 @@ export async function GET() {
 const request = z.discriminatedUnion("action", [
   z.object({ action: z.literal("venue"), data: venueSchema }),
   z.object({ action: z.literal("payment"), data: z.unknown() }),
+  z.object({ action: z.literal("musician"), data: musicianEditSchema }),
   z.object({
     action: z.literal("invite"),
     data: z.object({ musicianId: z.string().uuid().optional() }),
@@ -56,11 +71,16 @@ export async function POST(req: Request) {
         break;
       case "payment": {
         try {
-          state.payments.push(paymentRecord(state, input.data));
+          state.payments.push(...paymentRecords(state, input.data));
         } catch (error) {
           if (error instanceof z.ZodError) throw error;
           throw new RequestError((error as Error).message);
         }
+        break;
+      }
+      case "musician": {
+        const error = updateMusician(state, input.data);
+        if (error) throw new RequestError(error, 409);
         break;
       }
       case "invite": {

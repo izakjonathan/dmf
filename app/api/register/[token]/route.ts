@@ -51,7 +51,7 @@ export async function POST(req: Request, context: Context) {
       )
     )
       throw new RequestError(
-        "This email is already registered. Ask the venue for a personal update link.",
+        "This email is already registered. Ask the venue to update your details.",
         409,
       );
     const at = new Date().toISOString();
