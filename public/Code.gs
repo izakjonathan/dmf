@@ -17,8 +17,7 @@ function initialize() {
   spreadsheet.getSheetByName("_Stagebook").hideSheet();
   const secret = props.getProperty("API_SECRET") || Utilities.getUuid() + Utilities.getUuid() + Utilities.getUuid();
   props.setProperties({ SPREADSHEET_ID: spreadsheet.getId(), API_SECRET: secret });
-  const ui = SpreadsheetApp.getUi();
-  ui.alert("Stagebook connection secret", secret + "\n\nUse this as GOOGLE_SCRIPT_SECRET in Vercel.", ui.ButtonSet.OK);
+  console.info("Stagebook initialized. Find API_SECRET under Project Settings → Script properties.");
 }
 
 function doPost(event) {
