@@ -209,9 +209,10 @@ export function findInvite(state: Workspace, raw: string) {
 }
 
 export async function probeContractEmail() {
+  // The invalid invite ID and empty URL force every email-capable adapter to skip sending.
+  const deployment =
+    process.env.GOOGLE_SCRIPT_URL?.match(/\/([\w-]+)\/exec$/)?.[1].slice(-8);
   try {
-    // An invalid invite ID and empty URL force the script to skip delivery.
-    // MailApp quota is queried before that check, including in the first email adapter.
     const result = await sheets("emailContracts", {
       links: [{ id: "", url: "" }],
     });
@@ -219,24 +220,14 @@ export async function probeContractEmail() {
     const mail = issues.includes("MAIL_PERMISSION")
       ? "permission"
       : issues.includes("MAIL_UNCERTAIN")
-        ? "uncertain"
+        ? "unavailable"
         : result.delivery?.sent === 0 && result.delivery?.failed === 1
-          ? "mail-app-accessible"
-          : "unexpected";
-    const invites: Workspace["invites"] = result.state?.invites ?? [];
-    return {
-      mail,
-      signingRequests: invites.filter((invite) => invite.paymentId).length,
-      emailsRecorded: invites.filter((invite) => invite.emailSentAt).length,
-    };
+          ? "connected"
+          : "unavailable";
+    return { deployment, mail };
   } catch (error) {
-    let workbook = false;
-    try {
-      await metadata();
-      workbook = true;
-    } catch {}
     return {
-      workbook,
+      deployment,
       mail:
         error instanceof RequestError &&
         error.message.startsWith("The deployed Apps Script")

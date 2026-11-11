@@ -6,6 +6,7 @@ import {
   json,
   paymentSigningPath,
   paymentSigningToken,
+  probeContractEmail,
   readState,
   RequestError,
   sameOrigin,
@@ -31,8 +32,10 @@ export const maxDuration = 60;
 export async function GET(req: Request) {
   try {
     await admin();
-    const state = await readState();
     const params = new URL(req.url).searchParams;
+    if (params.get("emailCheck") === "1")
+      return json(await probeContractEmail());
+    const state = await readState();
     const signingId = params.get("signing");
     if (signingId !== null) {
       const invite = activePaymentInvite(state, signingId);

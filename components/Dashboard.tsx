@@ -30,6 +30,17 @@ import {
 import { BankFields } from "./BankFields";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
 
+const emailChecks: Record<string, string> = {
+  connected:
+    "The deployed script reached Google MailApp. You can retry a signing email.",
+  permission:
+    "The deployed script needs email permission. Run authorizeContractEmail as the web app owner.",
+  "adapter-rejected-mail":
+    "The deployed script rejected the email check. Compare the deployment ID below with the web app you updated.",
+  unavailable:
+    "The email check could not reach Google MailApp. Check Apps Script executions.",
+};
+
 const deliveryMessages: Record<string, string> = {
   MAIL_PERMISSION:
     "Google denied email permission. Run authorizeContractEmail as the web app owner, then retry.",
@@ -115,6 +126,11 @@ export default function Dashboard() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyUrl, setCopyUrl] = useState("");
   const [signingUrl, setSigningUrl] = useState("");
+  const [emailCheck, setEmailCheck] = useState<{
+    mail: string;
+    deployment?: string;
+  }>();
+  const [emailChecking, setEmailChecking] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const actions = useRef<HTMLDivElement>(null);
   const actionToggle = useRef<HTMLButtonElement>(null);
@@ -271,6 +287,17 @@ export default function Dashboard() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+  async function checkEmailConnection() {
+    setEmailChecking(true);
+    setEmailCheck(undefined);
+    try {
+      setEmailCheck(await request("/api/workspace?emailCheck=1"));
+    } catch {
+      setEmailCheck({ mail: "unavailable" });
+    } finally {
+      setEmailChecking(false);
     }
   }
   async function copySigningLink(id: string) {
@@ -545,6 +572,7 @@ export default function Dashboard() {
             setActionsOpen(false);
             setCopyUrl("");
             setSigningUrl("");
+            setEmailCheck(undefined);
             go("Overview");
             if (demo) {
               setDemo(false);
@@ -711,6 +739,30 @@ export default function Dashboard() {
                 <p>No contracts signed yet.</p>
               )}
               <h2>Signing requests</h2>
+              {!demo && (
+                <>
+                  <button
+                    className="secondary"
+                    disabled={emailChecking}
+                    onClick={() => void checkEmailConnection()}
+                  >
+                    {emailChecking ? "Checking email…" : "Check email setup"}
+                  </button>
+                  {emailCheck && (
+                    <p role="status" className="fine">
+                      {emailChecks[emailCheck.mail] || emailChecks.unavailable}
+                      {emailCheck.deployment && (
+                        <>
+                          {" "}
+                          Deployment ID ends in{" "}
+                          <code>{emailCheck.deployment}</code>.
+                        </>
+                      )}
+                    </p>
+                  )}
+                </>
+              )}
+
               {signingUrl && (
                 <label>
                   Copy signing link manually
