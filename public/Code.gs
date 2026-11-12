@@ -269,7 +269,7 @@ function currentColumnFormats(book,tables) {
   if (!ranges.length) return formats;
   const response = Sheets.Spreadsheets.get(book.getId(), {
     ranges,
-    fields:"sheets(properties(title),data(startRow,startColumn,rowData(values(userEnteredFormat(numberFormat))))"
+    fields:"sheets.properties.title,sheets.data.startColumn,sheets.data.rowData.values.userEnteredFormat.numberFormat"
   });
   for (const sheet of response.sheets || []) {
     const name = sheet.properties.title;
