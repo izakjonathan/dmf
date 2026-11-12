@@ -21,6 +21,10 @@ Use **Get registration link** to collect artist and bank details. When recording
 
 For automatic delivery, replace the bound Apps Script with the latest [Code.gs](public/Code.gs). Run **authorizeContractEmail** once in the editor as the deployment owner and approve the email permission. It does not send a message. Then go to **Deploy → Manage deployments**, edit the existing web app and deploy a **New version** to retain the same endpoint URL. Email is sent through the script owner's Google account with the venue email set as Reply-To.
 
+## Sheet display formats
+
+The Apps Script writes native dates, times and DKK amounts to the generated tabs. Timestamps use the workbook time zone. Change their display in Google Sheets using **Format → Number**. Compatible formats already applied to data cells are preserved. Existing rows are converted on the next successful save after deploying the updated script.
+
 ## Development
 
 Run `npm ci`, `npm test` and `npm run build`. The demo works without a workbook and keeps its sample data in memory.

@@ -218,8 +218,95 @@ function rowsFor(state) {
   }
   return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary,Contracts:contracts};
 }
+const DATE_FORMAT = {type:"DATE",pattern:"dd-mm-yyyy"};
+const TIME_FORMAT = {type:"TIME",pattern:"hh:mm"};
+const DATE_TIME_FORMAT = {type:"DATE_TIME",pattern:"dd-mm-yyyy hh:mm"};
+const DKK_FORMAT = {type:"CURRENCY",pattern:'#,##0.00 "kr."'};
+const COLUMN_FORMATS = {
+  Musicians: {"Registered":DATE_TIME_FORMAT,"Updated":DATE_TIME_FORMAT},
+  Payments: {"Paid on":DATE_FORMAT,"Performance date":DATE_FORMAT,"Amount DKK":DKK_FORMAT,
+    "Net DKK":DKK_FORMAT,"Recorded at":DATE_TIME_FORMAT},
+  Contracts: {"Performance date":DATE_FORMAT,"Starts":TIME_FORMAT,"Ends":TIME_FORMAT,
+    "Fee DKK":DKK_FORMAT,"Payment":DATE_FORMAT,"Organizer signed at":DATE_TIME_FORMAT,
+    "Musician signed at":DATE_TIME_FORMAT},
+  Summary: {"Net paid DKK":DKK_FORMAT}
+};
+function sheetValue(value, format, timeZone) {
+  if (typeof value === "number") return {numberValue:value};
+  const literal = String(value ?? "");
+  const type = format?.type;
+  if (type === "TIME" && /^([01]\d|2[0-3]):[0-5]\d$/.test(literal)) {
+    const [hour,minute] = literal.split(":").map(Number);
+    return {numberValue:(hour * 60 + minute) / 1440};
+  }
+  let dateText = literal;
+  if (type === "DATE_TIME" && /^\d{4}-\d{2}-\d{2}T/.test(literal)) {
+    const instant = new Date(literal);
+    if (!Number.isNaN(instant.getTime())) {
+      dateText = Utilities.formatDate(instant, timeZone, "yyyy-MM-dd'T'HH:mm:ss.SSS");
+    }
+  }
+  if ((type === "DATE" || type === "DATE_TIME") &&
+      /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}\.\d{3})?$/.test(dateText)) {
+    const milliseconds = Date.parse((dateText.includes("T") ? dateText : dateText + "T00:00:00") + "Z");
+    if (Number.isFinite(milliseconds)) return {numberValue:milliseconds / 86400000 + 25569};
+  }
+  return {stringValue:literal};
+}
+function currentColumnFormats(book,tables) {
+  const ranges = [];
+  for (const name of Object.keys(COLUMN_FORMATS)) {
+    const sheet = book.getSheetByName(name);
+    const last = Math.min(sheet?.getMaxRows() || 0,tables[name].length);
+    if (last < 2) continue;
+    tables[name][0].forEach((header,column) => {
+      if (!COLUMN_FORMATS[name][header]) return;
+      const letter = String.fromCharCode(65 + column);
+      ranges.push(name + "!" + letter + "2:" + letter + last);
+    });
+  }
+  const formats = {};
+  if (!ranges.length) return formats;
+  const response = Sheets.Spreadsheets.get(book.getId(), {
+    ranges,
+    fields:"sheets(properties(title),data(startRow,startColumn,rowData(values(userEnteredFormat(numberFormat))))"
+  });
+  for (const sheet of response.sheets || []) {
+    const name = sheet.properties.title;
+    formats[name] = {};
+    for (const data of sheet.data || []) {
+      const column = data.startColumn || 0;
+      formats[name][column] = (data.rowData || []).map(row => row.values?.[0]?.userEnteredFormat?.numberFormat?.type);
+    }
+  }
+  return formats;
+}
+function applyDefaultFormats(requests,sheetId,rows,formats,existing) {
+  formats.forEach((format,column) => {
+    if (!format) return;
+    let start = null;
+    for (let row=1; row<=rows.length; row++) {
+      const current = existing?.[column]?.[row-1];
+      const compatible = current === format.type ||
+        (format.type === "DATE_TIME" && (current === "DATE" || current === "TIME"));
+      const needsFormat = row < rows.length && !compatible &&
+        typeof rows[row][column].userEnteredValue.numberValue === "number";
+      if (needsFormat && start === null) start = row;
+      if (!needsFormat && start !== null) {
+        requests.push({repeatCell:{
+          range:{sheetId,startRowIndex:start,endRowIndex:row,startColumnIndex:column,endColumnIndex:column+1},
+          cell:{userEnteredFormat:{numberFormat:format}},
+          fields:"userEnteredFormat.numberFormat"
+        }});
+        start = null;
+      }
+    }
+  });
+}
 function writeWorkbook(book,state) {
   const tables = rowsFor(state);
+  const existingFormats = currentColumnFormats(book,tables);
+  const timeZone = book.getSpreadsheetTimeZone();
   const encoded = Utilities.base64Encode(JSON.stringify(state), Utilities.Charset.UTF_8);
   const storage = [[state.revision]];
   for(let i=0; i<encoded.length; i+=40000) storage.push([encoded.slice(i,i+40000)]);
@@ -243,11 +330,16 @@ function writeWorkbook(book,state) {
     if (sheet && rows.length > sheet.getMaxRows()) {
       requests.push({updateSheetProperties:{properties:{sheetId,gridProperties:{rowCount:rows.length}},fields:"gridProperties.rowCount"}});
     }
+    const formats = rows[0].map(header => COLUMN_FORMATS[name]?.[header]);
+    const values = rows.map((row,index) => row.map((value,column) => ({
+      userEnteredValue:sheetValue(value,index ? formats[column] : undefined,timeZone)
+    })));
     requests.push({updateCells:{
       range:{sheetId,startRowIndex:0,startColumnIndex:0,endColumnIndex:rows[0].length},
-      rows:rows.map(row=>({values:row.map(value=>({userEnteredValue:typeof value==="number"?{numberValue:value}:{stringValue:String(value??"")}}))})),
+      rows:values.map(values=>({values})),
       fields:"userEnteredValue"
     }});
+    applyDefaultFormats(requests,sheetId,values,formats,existingFormats[name]);
     if (name !== "_Stagebook") {
       requests.push({updateSheetProperties:{properties:{sheetId,gridProperties:{frozenRowCount:1}},fields:"gridProperties.frozenRowCount"}});
       requests.push({repeatCell:{

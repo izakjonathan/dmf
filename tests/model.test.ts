@@ -342,3 +342,140 @@ test("contract email reports known rejections and allows retry without clearing 
   assert.equal(attempts, 2);
   assert.ok(warnings.some((message) => message.includes("MAIL_PERMISSION")));
 });
+
+test("Sheets sync writes numeric dates, times and DKK while keeping custom formats", () => {
+  const state = demoWorkspace();
+  state.payments[0].recordedAt = "2026-11-11T23:30:45.000Z";
+  let captured: unknown[] = [];
+  const requests = runInNewContext(
+    readFileSync(new URL("../public/Code.gs", import.meta.url), "utf8") +
+      `
+      writeWorkbook(book, state);
+      output;
+    `,
+    {
+      state,
+      book: {
+        getId: () => "book",
+        getSpreadsheetTimeZone: () => "Europe/Copenhagen",
+        getSheetByName: (name: string) => ({
+          getSheetId: () =>
+            [
+              "Venue",
+              "Musicians",
+              "Payments",
+              "Summary",
+              "Contracts",
+              "_Stagebook",
+            ].indexOf(name) + 1,
+          getMaxRows: () => 1000,
+          getLastRow: () => 0,
+        }),
+      },
+      Utilities: {
+        Charset: { UTF_8: "UTF-8" },
+        base64Encode: (value: string) => Buffer.from(value).toString("base64"),
+        formatDate: (_instant: Date, timeZone: string) => {
+          assert.equal(timeZone, "Europe/Copenhagen");
+          return "2026-11-12T00:30:45.000";
+        },
+      },
+      Sheets: {
+        Spreadsheets: {
+          get: (_id: string, options: { ranges: string[] }) => {
+            assert.ok(options.ranges.includes("Payments!F2:F5"));
+            return {
+              sheets: [
+                {
+                  properties: { title: "Payments" },
+                  data: [
+                    {
+                      startRow: 1,
+                      startColumn: 5,
+                      rowData: [
+                        {
+                          values: [
+                            {
+                              userEnteredFormat: {
+                                numberFormat: {
+                                  type: "DATE",
+                                  pattern: "yyyy/mm/dd",
+                                },
+                              },
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            };
+          },
+          batchUpdate: (value: { requests: unknown[] }) => {
+            captured = value.requests;
+          },
+        },
+      },
+      get output() {
+        return captured;
+      },
+    },
+  );
+  function dateSerial(iso: string) {
+    return Date.parse(iso) / 86400000 + 25569;
+  }
+  const values = requests.find(
+    (request: any) => request.updateCells?.range.sheetId === 3,
+  ).updateCells.rows[1].values;
+  assert.equal(
+    values[5].userEnteredValue.numberValue,
+    dateSerial("2026-11-06T00:00:00Z"),
+  );
+  assert.equal(values[7].userEnteredValue.numberValue, 3150);
+  assert.equal(
+    values[13].userEnteredValue.numberValue,
+    dateSerial("2026-11-12T00:30:45Z"),
+  );
+  const numberFormats = requests
+    .filter(
+      (request: any) =>
+        request.repeatCell?.fields === "userEnteredFormat.numberFormat",
+    )
+    .map((request: any) => request.repeatCell);
+  assert.ok(
+    numberFormats.some(
+      (request: any) =>
+        request.range.sheetId === 3 &&
+        request.range.startColumnIndex === 5 &&
+        request.range.startRowIndex === 2 &&
+        request.cell.userEnteredFormat.numberFormat.pattern === "dd-mm-yyyy",
+    ),
+  );
+  assert.ok(
+    !numberFormats.some(
+      (request: any) =>
+        request.range.sheetId === 3 &&
+        request.range.startColumnIndex === 5 &&
+        request.range.startRowIndex === 1,
+    ),
+  );
+  assert.ok(
+    numberFormats.some(
+      (request: any) =>
+        request.range.sheetId === 3 &&
+        request.range.startColumnIndex === 7 &&
+        request.cell.userEnteredFormat.numberFormat.type === "CURRENCY",
+    ),
+  );
+  const conversion = runInNewContext(
+    readFileSync(new URL("../public/Code.gs", import.meta.url), "utf8") +
+      '\n[sheetValue("21:30",TIME_FORMAT),sheetValue("First working day after performance",DATE_FORMAT),sheetValue("0000")]',
+  );
+  assert.equal(conversion[0].numberValue, 1290 / 1440);
+  assert.equal(
+    conversion[1].stringValue,
+    "First working day after performance",
+  );
+  assert.equal(conversion[2].stringValue, "0000");
+});
