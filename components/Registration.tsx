@@ -12,6 +12,7 @@ import {
 import { BankFields } from "./BankFields";
 import { ContractReceipt, ContractTerms } from "./Contract";
 import { Brand } from "./Dashboard";
+import { ViewportTheme } from "./ViewportTheme";
 type Details = {
   venue: {
     name: string;
@@ -155,6 +156,7 @@ export default function Registration({ token }: { token: string }) {
   }
   return (
     <main className="gate registration">
+      <ViewportTheme />
       <div className="registration-intro">
         <div className="gate-inner">
           <header>

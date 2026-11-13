@@ -38,8 +38,16 @@
 }
 
 html {
-  background: #000;
+  background: var(--background);
   -webkit-text-size-adjust: 100%;
+}
+
+html:has(.sign-in) {
+  --background: var(--cream);
+}
+
+html:has(.registration) {
+  --background: var(--blue);
 }
 
 body {
@@ -687,11 +695,30 @@ label small {
   background: color-mix(in srgb, var(--cream) 85%, white);
 }
 
-.sign-in-photo {
-  min-height: clamp(330px, 100vw, 480px);
-  background:
-    linear-gradient(#1f2d4826, #1f2d4866),
-    var(--blue) url("/live-music.webp") 57% center / cover no-repeat;
+.sign-in {
+  display: grid;
+  place-items: center;
+  padding: 32px 24px;
+}
+
+.sign-in .gate-inner {
+  width: min(100%, 400px);
+  padding: 0;
+}
+
+.sign-in .brand {
+  margin-bottom: 32px;
+  font-size: clamp(40px, 9vw, 58px);
+  text-align: center;
+}
+
+.sign-in .auth {
+  border-top: 0;
+  padding: 0;
+}
+
+.sign-in .auth button {
+  width: 100%;
 }
 
 .registration-intro {
@@ -762,11 +789,6 @@ label small {
 
   .filters {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .sign-in {
-    display: grid;
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   }
 }
 

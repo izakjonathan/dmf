@@ -10,16 +10,12 @@ import {
 import {
   bandKey,
   clientWorkspace,
-  demoWorkspace,
   empty,
   isoWeek,
   money,
   net,
-  musicianEditSchema,
-  paymentRecords,
   tariff,
   today,
-  updateMusician,
   type ClientWorkspace,
   type Musician,
   type Payment,
@@ -27,6 +23,7 @@ import {
   type Venue,
 } from "@/lib/model";
 
+import { ViewportTheme } from "./ViewportTheme";
 import { BankFields } from "./BankFields";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
 
@@ -112,11 +109,9 @@ export default function Dashboard() {
   const [mode, setMode] = useState<
     "loading" | "connect" | "setup" | "login" | "app"
   >("loading");
-  const [workspace, setWorkspace] = useState<ClientWorkspace>(() =>
+  const [data, setWorkspace] = useState<ClientWorkspace>(() =>
     clientWorkspace(empty()),
   );
-  const [sample, setSample] = useState(demoWorkspace);
-  const [demo, setDemo] = useState(false);
   const [sheet, setSheet] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -134,7 +129,6 @@ export default function Dashboard() {
   const dialog = useRef<HTMLDialogElement>(null);
   const actions = useRef<HTMLDivElement>(null);
   const actionToggle = useRef<HTMLButtonElement>(null);
-  const data = demo ? clientWorkspace(sample) : workspace;
   const start = useCallback(async () => {
     setError("");
     try {
@@ -202,29 +196,6 @@ export default function Dashboard() {
     setBusy(true);
     setError("");
     try {
-      if (demo) {
-        const copy = structuredClone(sample);
-        if (action === "venue") copy.venue = values as Venue;
-        if (action === "payment")
-          copy.payments.push(...paymentRecords(copy, values));
-        if (action === "musician") {
-          const problem = updateMusician(
-            copy,
-            musicianEditSchema.parse(values),
-          );
-          if (problem) throw Error(problem);
-        }
-        if (action === "void") {
-          const { id, reason } = values as { id: string; reason: string };
-          const item = copy.payments.find((p) => p.id === id);
-          if (item) item.voidReason = reason;
-        }
-        setSample(copy);
-        setNotice("Saved in the demo.");
-        dialog.current?.close();
-        setModal(null);
-        return;
-      }
       const result = await request("/api/workspace", { action, data: values });
       setWorkspace(result.workspace);
       dialog.current?.close();
@@ -257,12 +228,9 @@ export default function Dashboard() {
     setBusy(true);
     setError("");
     try {
-      const result = demo
-        ? {
-            profile: sample.musicians.find((musician) => musician.id === id),
-            collectCpr: sample.venue.collectCpr,
-          }
-        : await request("/api/workspace?musician=" + encodeURIComponent(id));
+      const result = await request(
+        "/api/workspace?musician=" + encodeURIComponent(id),
+      );
       if (!result.profile) throw Error("Musician not found.");
       setModal({
         kind: "musician",
@@ -332,7 +300,6 @@ export default function Dashboard() {
     const link = copyUrl
       ? Promise.resolve(copyUrl)
       : (async () => {
-          if (demo) return location.origin + "/register/demo";
           const result = await request("/api/workspace", {
             action: "invite",
             data: {},
@@ -402,31 +369,12 @@ export default function Dashboard() {
       setBusy(false);
     }
   }
-  if (mode !== "app" && !demo)
+  if (mode !== "app")
     return (
       <main className="gate sign-in">
+        <ViewportTheme />
         <div className="gate-inner">
-          <header>
-            <Brand />
-            <button
-              className="text-action"
-              onClick={() => {
-                setDemo(true);
-                setError("");
-              }}
-            >
-              Explore demo
-            </button>
-          </header>
-          <h1>
-            Musician
-            <br />
-            payments.
-          </h1>
-          <p className="lead">
-            Collect musician details, record payments and keep everything in
-            your Google Sheet.
-          </p>
+          <h1 className="brand">Stagebook</h1>
           {error && (
             <p className="error" role="alert">
               {error}
@@ -522,7 +470,6 @@ export default function Dashboard() {
             </form>
           )}
         </div>
-        <div className="sign-in-photo" aria-hidden="true" />
       </main>
     );
   const matching = data.musicians.filter((m) =>
@@ -563,6 +510,7 @@ export default function Dashboard() {
       .reduce((sum, p) => sum + net(p), 0);
   return (
     <div className="shell">
+      <ViewportTheme />
       <header className="workspace-header">
         <h1>{page === "Overview" ? "Musician payments" : page}</h1>
         <button
@@ -574,15 +522,11 @@ export default function Dashboard() {
             setSigningUrl("");
             setEmailCheck(undefined);
             go("Overview");
-            if (demo) {
-              setDemo(false);
-              return;
-            }
             await request("/api/session", { action: "logout" });
             await start();
           }}
         >
-          {demo ? "Exit demo" : "Sign out"}
+          Sign out
         </button>
       </header>
       <main className="main">
@@ -687,7 +631,7 @@ export default function Dashboard() {
           {page === "Reports" && <Reports workspace={data} />}
           {page === "Venue" && (
             <VenueForm
-              key={data.revision + ":" + demo}
+              key={data.revision}
               venue={data.venue}
               busy={busy}
               save={(v) => void mutate("venue", v)}
@@ -696,20 +640,18 @@ export default function Dashboard() {
           {page === "Google Sheet" && (
             <section className="panel guide">
               <h2>Workbook</h2>
-              {!demo && (
-                <div className="sheet-status row">
-                  <span className="eyebrow">Google Sheets connected</span>
-                  <button className="secondary" onClick={() => void start()}>
-                    Refresh
-                  </button>
-                </div>
-              )}
+              <div className="sheet-status row">
+                <span className="eyebrow">Google Sheets connected</span>
+                <button className="secondary" onClick={() => void start()}>
+                  Refresh
+                </button>
+              </div>
               <p>
                 Venue details, musician details, payments and totals update on
                 every save. Restrict workbook access to staff who handle
                 payments.
               </p>
-              {sheet && !demo && (
+              {sheet && (
                 <a
                   className="button"
                   href={sheet}
@@ -739,28 +681,24 @@ export default function Dashboard() {
                 <p>No contracts signed yet.</p>
               )}
               <h2>Signing requests</h2>
-              {!demo && (
-                <>
-                  <button
-                    className="secondary"
-                    disabled={emailChecking}
-                    onClick={() => void checkEmailConnection()}
-                  >
-                    {emailChecking ? "Checking email…" : "Check email setup"}
-                  </button>
-                  {emailCheck && (
-                    <p role="status" className="fine">
-                      {emailChecks[emailCheck.mail] || emailChecks.unavailable}
-                      {emailCheck.deployment && (
-                        <>
-                          {" "}
-                          Deployment ID ends in{" "}
-                          <code>{emailCheck.deployment}</code>.
-                        </>
-                      )}
-                    </p>
+              <button
+                className="secondary"
+                disabled={emailChecking}
+                onClick={() => void checkEmailConnection()}
+              >
+                {emailChecking ? "Checking email…" : "Check email setup"}
+              </button>
+              {emailCheck && (
+                <p role="status" className="fine">
+                  {emailChecks[emailCheck.mail] || emailChecks.unavailable}
+                  {emailCheck.deployment && (
+                    <>
+                      {" "}
+                      Deployment ID ends in{" "}
+                      <code>{emailCheck.deployment}</code>.
+                    </>
                   )}
-                </>
+                </p>
               )}
 
               {signingUrl && (
