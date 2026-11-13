@@ -56,7 +56,7 @@ type Page =
   | "Payments"
   | "Reports"
   | "Venue"
-  | "Google Sheet";
+  | "Contracts";
 type Modal =
   | { kind: "payment" }
   | { kind: "contract"; contract: SignedContract }
@@ -68,7 +68,7 @@ const pages: Page[] = [
   "Payments",
   "Reports",
   "Venue",
-  "Google Sheet",
+  "Contracts",
 ];
 function fields(event: FormEvent<HTMLFormElement>) {
   event.preventDefault();
@@ -112,7 +112,7 @@ export default function Dashboard() {
   const [data, setWorkspace] = useState<ClientWorkspace>(() =>
     clientWorkspace(empty()),
   );
-  const [sheet, setSheet] = useState<string | null>(null);
+  const [sheetUpdating, setSheetUpdating] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -134,6 +134,28 @@ export default function Dashboard() {
   const dialog = useRef<HTMLDialogElement>(null);
   const actions = useRef<HTMLDivElement>(null);
   const actionToggle = useRef<HTMLButtonElement>(null);
+  const loadWorkspace = useCallback(async () => {
+    const result = await request("/api/workspace");
+    setWorkspace(result.workspace);
+    setRegistrationLink(result.registrationLink);
+    setCopyUrl("");
+  }, []);
+
+  async function updateGoogleSheet() {
+    setSheetUpdating(true);
+    setBusy(true);
+    setError("");
+    try {
+      await loadWorkspace();
+      setNotice("Updated from Google Sheets.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSheetUpdating(false);
+      setBusy(false);
+    }
+  }
+
   const start = useCallback(async () => {
     setError("");
     try {
@@ -150,17 +172,13 @@ export default function Dashboard() {
         setMode("login");
         return;
       }
-      const result = await request("/api/workspace");
-      setWorkspace(result.workspace);
-      setRegistrationLink(result.registrationLink);
-      setCopyUrl("");
-      setSheet(result.sheet);
+      await loadWorkspace();
       setMode("app");
     } catch (e) {
       setMode("connect");
       setError((e as Error).message);
     }
-  }, []);
+  }, [loadWorkspace]);
   useEffect(() => {
     void start();
   }, [start]);
@@ -212,7 +230,7 @@ export default function Dashboard() {
       if (result.delivery) {
         const { sent, failed, issues, message } = result.delivery;
         if (failed) {
-          go("Google Sheet");
+          go("Contracts");
           const detail = (issues as string[] | undefined)
             ?.map((code) => deliveryMessages[code])
             .filter(Boolean)
@@ -661,30 +679,8 @@ export default function Dashboard() {
               save={(v) => void mutate("venue", v)}
             />
           )}
-          {page === "Google Sheet" && (
+          {page === "Contracts" && (
             <section className="panel guide">
-              <h2>Workbook</h2>
-              <div className="sheet-status row">
-                <span className="eyebrow">Google Sheets connected</span>
-                <button className="secondary" onClick={() => void start()}>
-                  Refresh
-                </button>
-              </div>
-              <p>
-                Venue details, musician details, payments and totals update on
-                every save. Restrict workbook access to staff who handle
-                payments.
-              </p>
-              {sheet && (
-                <a
-                  className="button"
-                  href={sheet}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open Google Sheet
-                </a>
-              )}
               <h2>Signed contracts</h2>
               {data.contracts.length ? (
                 data.contracts.map((contract) => (
@@ -830,6 +826,15 @@ export default function Dashboard() {
               ) : (
                 <p>No links created yet.</p>
               )}
+              <footer className="contracts-footer">
+                <button
+                  className="secondary sheet-update"
+                  disabled={busy}
+                  onClick={() => void updateGoogleSheet()}
+                >
+                  {sheetUpdating ? "Updating…" : "Update Google Sheet"}
+                </button>
+              </footer>
             </section>
           )}
         </section>

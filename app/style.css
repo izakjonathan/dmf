@@ -517,11 +517,22 @@ label small {
   color: #ffc5b2;
 }
 
-.sheet-status {
-  margin-bottom: 14px;
+.contracts-footer {
+  margin-top: 28px;
 }
 
-.sheet-status + p,
+.sheet-update {
+  min-height: 44px;
+  padding-inline: 10px;
+  border-color: transparent;
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.sheet-update:not(:disabled):is(:hover, :focus-visible) {
+  opacity: 1;
+}
+
 .guide > p {
   margin-bottom: 14px;
 }
