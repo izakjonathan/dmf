@@ -15,9 +15,9 @@
 }
 
 :root {
-  --navy: #000000;
-  --blue: #000000;
-  --cream: #ffffff;
+  --navy: #EBEBEB;
+  --blue: #EBEBEB;
+  --cream: #0D0D0D;
   --background: var(--navy);
   --ink: var(--cream);
   --display: Agilera, Georgia, serif;
@@ -704,6 +704,9 @@ label small {
 .sign-in .brand {
   margin-bottom: 32px;
   font-size: clamp(40px, 9vw, 58px);
+  text-align: center;
+}
+.workspace-loading {
   text-align: center;
 }
 
