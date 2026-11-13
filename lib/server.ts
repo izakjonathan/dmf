@@ -118,6 +118,10 @@ async function sheets(action: string, data: object = {}) {
     );
   return result;
 }
+export function registrationToken(id: string) {
+  return sign("stagebook-registration:" + id, process.env.AUTH_SECRET!);
+}
+
 export function paymentSigningToken(id: string) {
   return sign("stagebook-payment-contract:" + id, process.env.AUTH_SECRET!);
 }

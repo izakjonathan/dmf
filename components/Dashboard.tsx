@@ -119,6 +119,11 @@ export default function Dashboard() {
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [registrationLink, setRegistrationLink] = useState<{
+    path: string;
+    expiresAt: string;
+  } | null>(null);
+  const [creatingLink, setCreatingLink] = useState(false);
   const [copyUrl, setCopyUrl] = useState("");
   const [signingUrl, setSigningUrl] = useState("");
   const [emailCheck, setEmailCheck] = useState<{
@@ -147,6 +152,8 @@ export default function Dashboard() {
       }
       const result = await request("/api/workspace");
       setWorkspace(result.workspace);
+      setRegistrationLink(result.registrationLink);
+      setCopyUrl("");
       setSheet(result.sheet);
       setMode("app");
     } catch (e) {
@@ -198,6 +205,8 @@ export default function Dashboard() {
     try {
       const result = await request("/api/workspace", { action, data: values });
       setWorkspace(result.workspace);
+      setRegistrationLink(result.registrationLink);
+      setCopyUrl("");
       dialog.current?.close();
       setModal(null);
       if (result.delivery) {
@@ -297,16 +306,31 @@ export default function Dashboard() {
     }
     setBusy(true);
     setError("");
-    const link = copyUrl
-      ? Promise.resolve(copyUrl)
-      : (async () => {
-          const result = await request("/api/workspace", {
-            action: "invite",
-            data: {},
-          });
-          setWorkspace(result.workspace);
-          return location.origin + result.link;
-        })();
+    if (registrationLink && registrationLink.expiresAt > new Date().toISOString()) {
+      const url = location.origin + registrationLink.path;
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopyUrl("");
+        setActionsOpen(false);
+        actionToggle.current?.focus();
+        setNotice("Registration link copied.");
+      } catch {
+        setCopyUrl(url);
+        setActionsOpen(true);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    setCopyUrl("");
+    setCreatingLink(true);
+    const link = request("/api/workspace", { action: "invite", data: {} }).then(
+      (result) => {
+        setWorkspace(result.workspace);
+        setRegistrationLink(result.registrationLink);
+        return location.origin + result.registrationLink.path;
+      },
+    );
     // Safari requires the clipboard write itself to start in the click handler.
     let clipboard: Promise<boolean> | undefined;
     try {
@@ -327,8 +351,6 @@ export default function Dashboard() {
     }
     try {
       const url = await link;
-      dialog.current?.close();
-      setModal(null);
       if (!(await clipboard)) {
         try {
           await navigator.clipboard.writeText(url);
@@ -346,6 +368,7 @@ export default function Dashboard() {
       setActionsOpen(false);
       setError((e as Error).message);
     } finally {
+      setCreatingLink(false);
       setBusy(false);
     }
   }
@@ -519,6 +542,7 @@ export default function Dashboard() {
           onClick={async () => {
             setActionsOpen(false);
             setCopyUrl("");
+            setRegistrationLink(null);
             setSigningUrl("");
             setEmailCheck(undefined);
             go("Overview");
@@ -841,7 +865,7 @@ export default function Dashboard() {
               Add payment
             </button>
             <button disabled={busy} onClick={() => void copyRegistration()}>
-              Get registration link
+              {creatingLink ? "Creating link…" : "Get registration link"}
             </button>
             {copyUrl && (
               <label className="clipboard-fallback">

@@ -12,7 +12,7 @@ import {
   sameOrigin,
   sendContractEmails,
   spreadsheet,
-  token,
+  registrationToken,
   writeState,
 } from "@/lib/server";
 import {
@@ -54,13 +54,32 @@ export async function GET(req: Request) {
       return json({ profile, collectCpr: state.venue.collectCpr });
     }
     return json({
-      workspace: clientWorkspace(state),
+      ...workspaceResponse(state),
       sheet: spreadsheet(),
     });
   } catch (error) {
     return fail(error);
   }
 }
+function workspaceResponse(state: Workspace) {
+  const now = new Date().toISOString();
+  let registrationLink = null;
+  if (state.venue.legalName) {
+    for (const invite of state.invites) {
+      if (!invite.registration || invite.revoked || invite.expiresAt <= now)
+        continue;
+      const raw = registrationToken(invite.id);
+      if (hash(raw) !== invite.hash) continue;
+      registrationLink = {
+        path: "/register/" + raw,
+        expiresAt: invite.expiresAt,
+      };
+      break;
+    }
+  }
+  return { workspace: clientWorkspace(state), registrationLink };
+}
+
 function activePaymentInvite(state: Workspace, id: string) {
   const invite = state.invites.find((item) => item.id === id);
   if (
@@ -81,7 +100,7 @@ async function deliver(state: Workspace, invites: Invite[]) {
   try {
     const result = await sendContractEmails(invites);
     return json({
-      workspace: clientWorkspace(result.state),
+      ...workspaceResponse(result.state),
       delivery: result.delivery,
     });
   } catch (error) {
@@ -90,7 +109,7 @@ async function deliver(state: Workspace, invites: Invite[]) {
         ? error.message
         : "Google did not confirm the send. Check the existing signing request or copy its link.";
     return json({
-      workspace: clientWorkspace(state),
+      ...workspaceResponse(state),
       delivery: { sent: 0, failed: invites.length, message },
     });
   }
@@ -126,7 +145,6 @@ export async function POST(req: Request) {
     await admin();
     const input = request.parse(await req.json());
     const state = await readState();
-    let link: string | undefined;
     switch (input.action) {
       case "venue":
         state.venue = input.data;
@@ -202,15 +220,24 @@ export async function POST(req: Request) {
           throw new RequestError(
             "Save your venue details before getting a registration link.",
           );
-        const raw = token();
+        const current = workspaceResponse(state);
+        if (current.registrationLink) return json(current);
+        const id = crypto.randomUUID();
         state.invites.push({
-          id: crypto.randomUUID(),
-          hash: hash(raw),
+          id,
+          hash: hash(registrationToken(id)),
           registration: true,
           expiresAt: new Date(Date.now() + 90 * 86400000).toISOString(),
         });
-        link = "/register/" + raw;
-        break;
+        try {
+          return json(workspaceResponse(await writeState(state)));
+        } catch (error) {
+          if (!(error instanceof RequestError) || error.status !== 409)
+            throw error;
+          const latest = workspaceResponse(await readState());
+          if (!latest.registrationLink) throw error;
+          return json(latest);
+        }
       }
       case "revoke": {
         const invite = state.invites.find((item) => item.id === input.data.id);
@@ -240,7 +267,7 @@ export async function POST(req: Request) {
         break;
       }
     }
-    return json({ workspace: clientWorkspace(await writeState(state)), link });
+    return json(workspaceResponse(await writeState(state)));
   } catch (error) {
     return fail(error);
   }
