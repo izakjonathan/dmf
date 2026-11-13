@@ -15,9 +15,9 @@
 }
 
 :root {
-  --navy: #1a1d38;
-  --blue: #1f2d48;
-  --cream: #f1dfb6;
+  --navy: #000000;
+  --blue: #000000;
+  --cream: #ffffff;
   --background: var(--navy);
   --ink: var(--cream);
   --display: Agilera, Georgia, serif;
