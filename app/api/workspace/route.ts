@@ -71,7 +71,7 @@ function workspaceResponse(state: Workspace) {
       const raw = registrationToken(invite.id);
       if (hash(raw) !== invite.hash) continue;
       registrationLink = {
-        path: "/register/" + raw,
+        path: "/r/" + Buffer.from(raw, "hex").toString("base64url"),
         expiresAt: invite.expiresAt,
       };
       break;
