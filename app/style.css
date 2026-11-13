@@ -9,7 +9,7 @@
 @font-face {
   font-family: "Bricolage Grotesque";
   src: url("/fonts/BricolageGrotesque-variable.woff2") format("woff2");
-  font-weight: 200 800;
+  font-weight: 200 700;
   font-style: normal;
   font-display: swap;
 }
@@ -106,7 +106,7 @@ button,
   border-radius: 999px;
   background: var(--ink);
   color: var(--background);
-  font-weight: 620;
+  font-weight: 500;
   line-height: 1.1;
   text-align: center;
   text-decoration: none;
@@ -173,7 +173,7 @@ button:disabled {
 
 .workspace-header,
 .main {
-  width: min(100%, 880px);
+  width: min(100%, 700px);
   margin-inline: auto;
   padding-inline: 16px;
 }
