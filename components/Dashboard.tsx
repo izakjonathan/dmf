@@ -404,7 +404,7 @@ export default function Dashboard() {
             </p>
           )}
           {mode === "loading" ? (
-            <p>Opening workspace…</p>
+            <p className="workspace-loading">Opening workspace…</p>
           ) : mode === "connect" ? (
             <section className="panel guide">
               <h2>Connect your Google Sheet</h2>
