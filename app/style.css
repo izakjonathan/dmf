@@ -26,8 +26,7 @@
 }
 
 :root,
-.gate,
-.registration-intro {
+.sign-in {
   --muted: color-mix(in srgb, var(--ink) 66%, var(--background));
   --rule: color-mix(in srgb, var(--ink) 22%, var(--background));
   --surface: color-mix(in srgb, var(--ink) 7%, var(--background));
@@ -44,10 +43,6 @@ html {
 
 html:has(.sign-in) {
   --background: var(--cream);
-}
-
-html:has(.registration) {
-  --background: var(--blue);
 }
 
 body {
@@ -642,12 +637,9 @@ label small {
 }
 
 .gate {
-  --background: var(--cream);
-  --ink: var(--blue);
   min-height: 100dvh;
   background: var(--background);
   color: var(--ink);
-  color-scheme: light;
 }
 
 .gate-inner {
@@ -686,16 +678,19 @@ label small {
   max-width: 440px;
 }
 
-.gate .error {
+.sign-in .error {
   color: #7b2b22;
 }
 
-.gate input,
-.gate select {
+.sign-in input,
+.sign-in select {
   background: color-mix(in srgb, var(--cream) 85%, white);
 }
 
 .sign-in {
+  --background: var(--cream);
+  --ink: var(--blue);
+  color-scheme: light;
   display: grid;
   place-items: center;
   padding: 32px 24px;
@@ -721,19 +716,27 @@ label small {
   width: 100%;
 }
 
-.registration-intro {
-  --background: var(--blue);
-  --ink: var(--cream);
-  background: var(--background);
-  color: var(--ink);
+.registration {
+  color-scheme: dark;
+}
+
+.registration-intro header {
+  margin-bottom: 24px;
 }
 
 .registration-intro .gate-inner {
-  padding-bottom: clamp(24px, 6vw, 50px);
+  padding-bottom: 20px;
+}
+
+.registration-intro h1 {
+  margin-bottom: 10px;
+  font-size: clamp(25px, 8.5vw, 56px);
+  white-space: nowrap;
 }
 
 .registration-intro .lead {
   margin-bottom: 0;
+  color: var(--muted);
 }
 
 .registration .gate-inner {
@@ -742,7 +745,7 @@ label small {
 }
 
 .registration-content {
-  padding-top: clamp(22px, 5vw, 48px);
+  padding-top: 20px;
 }
 
 .registration-content .panel {

@@ -163,17 +163,7 @@ export default function Registration({ token }: { token: string }) {
             <Brand />
             {demo && <span className="eyebrow">Demo</span>}
           </header>
-          <h1>
-            {details?.signingOnly ? (
-              "Sign contract"
-            ) : (
-              <>
-                Musician
-                <br />
-                details.
-              </>
-            )}
-          </h1>
+          <h1>{details?.signingOnly ? "Sign contract" : "Musician details"}</h1>
           {details && <p className="lead">{details.venue.name}</p>}
         </div>
       </div>
