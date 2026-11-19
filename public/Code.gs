@@ -58,6 +58,15 @@ function doPost(event) {
     const length = storage.getLastRow();
     const encoded = length > 1 ? storage.getRange(2,1,length-1,1).getValues().map(row=>row[0]).join("") : "";
     const state = encoded ? JSON.parse(Utilities.newBlob(Utilities.base64Decode(encoded)).getDataAsString("UTF-8")) : null;
+    if (request.action === "syncBookings" || request.action === "bookingMail") {
+      if (!state?.auth) return respond({ok:false});
+      if (request.action === "syncBookings") {
+        syncBookingRows(book,state,props);
+        queueBookingReminders(state,props);
+        writeBookingState(book,state);
+      }
+      return respond(processBookingMail(book,state,props));
+    }
     if (request.action === "emailContracts") {
       step = "sending contract emails";
       return respond(emailContracts(book, state, request.links, props));
@@ -216,7 +225,18 @@ function rowsFor(state) {
       t.organizerSigner,t.organizerSignedAt,c.performerSigner,c.performerSignedAt,t.template.url,t.soundcheck || "",t.requests || "",t.paymentType || ""
     ]);
   }
-  return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary,Contracts:contracts};
+  const bookingMembers = [["Booking ID","Performance date","Act","Musician ID","Musician","Email","Contract ID","Attendance","Payment ID","Company approved by","Performance confirmed by","Performance confirmed at","Exception"]];
+  const bookingPayments = [["Booking ID","Performance date","Act","Musician","Email","Fee DKK","Payment type","Payment due","Status","Payment ID"]];
+  const bookingEmails = [["Booking ID","Recipient","Kind","Status","Sent at","Issue"]];
+  for (const b of state.bookings || []) for (const m of b.members) {
+    bookingMembers.push([b.id,b.date,b.act,m.musicianId,m.name,m.email,m.contractId || "",m.attendance || "",m.paymentId || "",b.approvedBy || "",b.confirmedBy || "",b.confirmedAt || "",b.attendanceNote || ""]);
+    const signed = (state.contracts || []).some(c=>c.id===m.contractId && c.bookingVersion===b.version);
+    const status = m.paymentId ? "Paid" : b.cancelled ? "Cancelled" : b.approvedVersion!==b.version ? "Company approval needed" : !signed ? "Artist signature needed" : !b.confirmedAt ? "Performance confirmation needed" : m.attendance!=="played" ? "Performance exception" : "Ready to pay";
+    bookingPayments.push([b.id,b.date,b.act,m.name,m.email,b.fee/100,b.paymentType,b.dueOn,status,m.paymentId || ""]);
+  }
+  for (const mail of state.bookingMail || []) if (mail.kind!=="verification") bookingEmails.push([mail.bookingId,mail.to,mail.kind,mail.status,mail.sentAt || "",mail.error || ""]);
+  return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary,Contracts:contracts,
+    "Booking members":bookingMembers,"Booking payments":bookingPayments,"Booking emails":bookingEmails};
 }
 const DATE_FORMAT = {type:"DATE",pattern:"dd-mm-yyyy"};
 const TIME_FORMAT = {type:"TIME",pattern:"hh:mm"};
@@ -229,7 +249,10 @@ const COLUMN_FORMATS = {
   Contracts: {"Performance date":DATE_FORMAT,"Starts":TIME_FORMAT,"Ends":TIME_FORMAT,
     "Fee DKK":DKK_FORMAT,"Payment":DATE_FORMAT,"Organizer signed at":DATE_TIME_FORMAT,
     "Musician signed at":DATE_TIME_FORMAT},
-  Summary: {"Net paid DKK":DKK_FORMAT}
+  Summary: {"Net paid DKK":DKK_FORMAT},
+  "Booking members": {"Performance date":DATE_FORMAT,"Performance confirmed at":DATE_TIME_FORMAT},
+  "Booking payments": {"Performance date":DATE_FORMAT,"Fee DKK":DKK_FORMAT,"Payment due":DATE_FORMAT},
+  "Booking emails": {"Sent at":DATE_TIME_FORMAT}
 };
 function sheetValue(value, format, timeZone) {
   if (typeof value === "number") return {numberValue:value};
@@ -262,7 +285,7 @@ function currentColumnFormats(book,tables) {
     tables[name][0].forEach((header,column) => {
       if (!COLUMN_FORMATS[name][header]) return;
       const letter = String.fromCharCode(65 + column);
-      ranges.push(name + "!" + letter + "2:" + letter + last);
+      ranges.push((name.includes(" ") ? "'" + name + "'" : name) + "!" + letter + "2:" + letter + last);
     });
   }
   const formats = {};
@@ -312,14 +335,15 @@ function writeWorkbook(book,state) {
   for(let i=0; i<encoded.length; i+=40000) storage.push([encoded.slice(i,i+40000)]);
   tables._Stagebook = storage;
   const requests = [];
+  const usedSheetIds = new Set(book.getSheets().map(item => item.getSheetId()));
   for (const name of Object.keys(tables)) {
     const sheet = book.getSheetByName(name);
     const rows = tables[name];
     let sheetId;
-    if (!sheet && name === "Contracts") {
-      const used = new Set(book.getSheets().map(item => item.getSheetId()));
+    if (!sheet && ["Contracts","Booking members","Booking payments","Booking emails"].includes(name)) {
       sheetId = 1;
-      while (used.has(sheetId)) sheetId++;
+      while (usedSheetIds.has(sheetId)) sheetId++;
+      usedSheetIds.add(sheetId);
       requests.push({addSheet:{properties:{sheetId,title:name,gridProperties:{rowCount:Math.max(1000,rows.length),columnCount:26}}}});
     } else {
       if (name === "Contracts" && sheet.getLastRow() && sheet.getRange("A1").getValue() !== rows[0][0]) {
@@ -350,4 +374,247 @@ function writeWorkbook(book,state) {
     }
   }
   Sheets.Spreadsheets.batchUpdate({requests},book.getId());
+}
+
+// Run once after deploying this version. Adds the booking sheet and email triggers.
+function setupBookingAutomation() {
+  initialize();
+  const props = PropertiesService.getScriptProperties();
+  const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
+  ensureBookingSheet(book);
+  MailApp.getRemainingDailyQuota();
+  const names = ["bookingSheetEdited", "runBookingAutomation"];
+  for (const trigger of ScriptApp.getProjectTriggers()) {
+    if (names.includes(trigger.getHandlerFunction())) ScriptApp.deleteTrigger(trigger);
+  }
+  ScriptApp.newTrigger("bookingSheetEdited").forSpreadsheet(book).onEdit().create();
+  ScriptApp.newTrigger("runBookingAutomation").timeBased().everyMinutes(5).create();
+  runBookingAutomation();
+  console.info("Booking automation enabled. Add acts in the Bookings sheet. Every musician must register individually.");
+}
+const BOOKING_HEADERS = ["Performance date","Act","Contact email","Musicians","Fee per musician DKK","Payment type","Payment due","Cancelled","Booking ID","Status","Registration link","Registration progress","Email status","Issue"];
+function ensureBookingSheet(book) {
+  let sheet = book.getSheetByName("Bookings");
+  if (!sheet) sheet = book.insertSheet("Bookings");
+  if (sheet.getLastRow() && sheet.getRange("A1").getValue() !== BOOKING_HEADERS[0]) {
+    throw Error("Rename the existing Bookings tab before enabling Stagebook bookings.");
+  }
+  sheet.getRange(1,1,1,BOOKING_HEADERS.length).setValues([BOOKING_HEADERS]);
+  sheet.setFrozenRows(1);
+  sheet.getRange("A:A").setNumberFormat("dd-mm-yyyy");
+  sheet.getRange("G:G").setNumberFormat("dd-mm-yyyy");
+  sheet.getRange("E:E").setNumberFormat('#,##0.00 "kr."');
+  sheet.getRange("A1:H1").setBackground("#1f2d48").setFontColor("#ffffff").setFontWeight("bold");
+  sheet.getRange("I1:N1").setBackground("#444444").setFontColor("#ffffff").setFontWeight("bold");
+  sheet.getRange("A1:H1").setNote("Enter one act per row. Required: date, act name, contact email and number of musicians. Fees are DKK per musician. Payment type defaults to Bank transfer. Cancelled accepts Yes or No. Stagebook manages columns I:N.");
+  return sheet;
+}
+function bookingSheetEdited(event) {
+  if (!event?.range || event.range.getSheet().getName() !== "Bookings" || event.range.getRow() < 2) return;
+  runBookingAutomation();
+}
+function bookingHmac(message,props) {
+  return Utilities.computeHmacSha256Signature(message,props.getProperty("API_SECRET"))
+    .map(value => ((value+256)%256).toString(16).padStart(2,"0")).join("");
+}
+function readStoredState(book) {
+  const sheet = book.getSheetByName("_Stagebook");
+  const length = sheet.getLastRow();
+  if (length < 2) return null;
+  const encoded = sheet.getRange(2,1,length-1,1).getValues().map(row=>row[0]).join("");
+  return JSON.parse(Utilities.newBlob(Utilities.base64Decode(encoded)).getDataAsString("UTF-8"));
+}
+function runBookingAutomation() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return;
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
+    const state = readStoredState(book);
+    if (!state?.auth) return;
+    syncBookingRows(book,state,props);
+    queueBookingReminders(state,props);
+    writeBookingState(book,state);
+    processBookingMail(book,state,props);
+  } catch (error) {
+    console.error("Stagebook booking automation: " + error.message);
+    throw error;
+  } finally { lock.releaseLock(); }
+}
+function bookingDate(value,zone) {
+  if (value instanceof Date && !isNaN(value.getTime())) return Utilities.formatDate(value,zone,"yyyy-MM-dd");
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const date = new Date(text+"T12:00:00Z");
+  return !isNaN(date.getTime()) && date.toISOString().slice(0,10) === text ? text : "";
+}
+function nextBookingWeekday(date) {
+  const day = new Date(date+"T12:00:00Z");
+  do { day.setUTCDate(day.getUTCDate()+1); } while ([0,6].includes(day.getUTCDay()));
+  return day.toISOString().slice(0,10);
+}
+function syncBookingRows(book,state,props) {
+  const sheet = ensureBookingSheet(book);
+  state.bookings ||= [];
+  state.bookingMail ||= [];
+  const length = sheet.getLastRow();
+  const rows = length < 2 ? [] : sheet.getRange(2,1,length-1,BOOKING_HEADERS.length).getValues();
+  const zone = book.getSpreadsheetTimeZone();
+  const seen = new Set();
+  rows.forEach((row,index) => {
+    if (row.slice(0,9).every(value => value === "")) return;
+    let id = String(row[8] || "").trim();
+    let issue = "";
+    const date = bookingDate(row[0],zone);
+    const act = String(row[1] || "").trim();
+    const contactEmail = String(row[2] || "").trim().toLowerCase();
+    const expectedMembers = Number(row[3]);
+    const feeDkk = row[4] === "" ? 0 : Number(row[4]);
+    const paymentType = String(row[5] || "Bank transfer").trim();
+    const dueOn = row[6] === "" ? date && nextBookingWeekday(date) : bookingDate(row[6],zone);
+    const cancelledText = String(row[7] || "No").trim().toLowerCase();
+    const cancelled = ["yes","true","cancelled"].includes(cancelledText);
+    if (!date || !act || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) issue = "Enter a valid date, act and contact email.";
+    if (!Number.isInteger(expectedMembers) || expectedMembers < 1 || expectedMembers > 100) issue = "Musicians must be a whole number between 1 and 100.";
+    if (!Number.isFinite(feeDkk) || feeDkk < 0 || feeDkk > 1000000) issue = "Enter a valid fee in DKK per musician.";
+    if (!["Cash","Bank transfer","Mobilepay"].includes(paymentType)) issue = "Payment type must be Cash, Bank transfer or Mobilepay.";
+    if (!dueOn) issue = "Enter a valid payment due date.";
+    if (!["yes","no","true","false","cancelled"].includes(cancelledText)) issue = "Cancelled must be Yes or No.";
+    if (id && (!/^[a-f0-9-]{36}$/i.test(id) || seen.has(id))) issue = "Duplicate or invalid Booking ID. Keep the original row and clear the copied ID to create another booking.";
+    if (id) seen.add(id);
+    let booking = state.bookings.find(item => item.id === id);
+    if (issue) {
+      if (booking) booking.sourceError = issue;
+      sheet.getRange(index+2,14).setValue(issue);
+      return;
+    }
+    const input = {date,act,contactEmail,expectedMembers,fee:Math.round(feeDkk*100),paymentType,dueOn,cancelled};
+    const sourceSignature = JSON.stringify(input);
+    if (!id) {
+      id = Utilities.getUuid();
+      sheet.getRange(index+2,9).setValue(id);
+      seen.add(id);
+    }
+    if (!booking) {
+      booking = {...input,id,version:1,members:[],sourceSignature,sourceVersion:1};
+      state.bookings.push(booking);
+    } else if (booking.sourceSignature !== sourceSignature) {
+      if (booking.members.some(member => member.paymentId)) {
+        booking.sourceError = "This booking has processed payments. Restore the input values and create a separate booking for any new performance.";
+      } else {
+        Object.assign(booking,input,{sourceSignature,sourceVersion:(booking.sourceVersion || 1)+1,version:booking.version+1,confirmedAt:undefined,confirmedBy:undefined,attendanceNote:undefined,sourceError:undefined});
+        for (const member of booking.members) { member.contractId = undefined; member.attendance = undefined; }
+        for (const invite of state.invites) if (invite.bookingId === id && !invite.signedAt) invite.revoked = true;
+        for (const mail of state.bookingMail) if (mail.bookingId === id && mail.status === "pending") {
+          mail.status = "failed"; mail.error = "Booking changed. Use its current links.";
+        }
+      }
+    } else booking.sourceError = undefined;
+    if (booking.sourceError) { sheet.getRange(index+2,14).setValue(booking.sourceError); return; }
+    const url = "https://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:"+id,props);
+    const mailId = "invitation:"+id+":"+(booking.sourceVersion || 1);
+    if (!cancelled && date >= Utilities.formatDate(new Date(),"Europe/Copenhagen","yyyy-MM-dd") && !state.bookingMail.some(mail=>mail.id===mailId)) {
+      state.bookingMail.push({id:mailId,bookingId:id,sourceVersion:booking.sourceVersion || 1,to:contactEmail,kind:"invitation",status:"pending",createdAt:new Date().toISOString(),
+        subject:"Booking details needed · "+act+" · "+date,
+        body:"You are booked at "+state.venue.name+" on "+date+".\n\n"+url+
+          "\n\nPlease complete the act schedule, lineup and agreed fee, and forward this booking link to EVERY performing musician. Each musician must verify their own email and register personal and payment details before playing. The company will approve the agreement and send individual contracts to sign.\n\nQuestions: "+state.venue.email});
+    }
+    const emails = state.bookingMail.filter(mail=>mail.bookingId===id && mail.kind!=="verification");
+    const status = booking.cancelled ? "Cancelled" : booking.confirmedAt ? "Performance confirmed" : booking.approvedVersion===booking.version ? "Company signed" : booking.members.length===booking.expectedMembers && booking.performance ? "Ready for approval" : "Collecting details";
+    sheet.getRange(index+2,10,1,5).setValues([[status,url,booking.members.length+" / "+booking.expectedMembers,
+      emails.some(mail=>["failed","uncertain"].includes(mail.status)) ? "Needs attention" : emails.some(mail=>mail.status==="pending") ? "Queued" : "Sent",booking.sourceError || ""]]);
+  });
+  for (const booking of state.bookings) if (!seen.has(booking.id)) {
+    booking.sourceError = "The booking row is missing. Restore it in the sheet, or restore it and set Cancelled to Yes.";
+  }
+}
+function writeBookingState(book,state) {
+  state.revision++;
+  writeWorkbook(book,state);
+}
+function queueBookingReminders(state,props) {
+  const now = new Date();
+  const day = Utilities.formatDate(now,"Europe/Copenhagen","yyyy-MM-dd");
+  state.bookingMail ||= [];
+  for (const booking of state.bookings || []) {
+    if (booking.cancelled || booking.sourceError || booking.date < day || Date.parse(booking.date+"T12:00:00Z") - now.getTime() > 7*86400000) continue;
+    if (booking.approvedVersion !== booking.version) {
+      if (booking.members.length===booking.expectedMembers && booking.performance) continue;
+      const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && ["invitation","reminder"].includes(m.kind) && !m.memberId).pop();
+      if (previous && (previous.status!=="sent" || now.getTime()-Date.parse(previous.sentAt || previous.createdAt)<86400000)) continue;
+      const id = "reminder:"+booking.id+":"+day;
+      if (state.bookingMail.some(m=>m.id===id)) continue;
+      state.bookingMail.push({id,bookingId:booking.id,to:booking.contactEmail,kind:"reminder",status:"pending",createdAt:now.toISOString(),
+        subject:"Registration reminder · "+booking.act+" · "+booking.date,
+        body:"Every performing musician must register before playing. "+booking.members.length+" of "+booking.expectedMembers+" are registered. Please also complete the act schedule.\n\nhttps://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:"+booking.id,props)});
+    } else {
+      for (const member of booking.members) {
+        const invite = state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt);
+        if (!invite) continue;
+        const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && m.memberId===member.id).pop();
+        if (previous && (previous.status!=="sent" || now.getTime()-Date.parse(previous.sentAt || previous.createdAt)<86400000)) continue;
+        const id = "sign-reminder:"+invite.id+":"+day;
+        if (state.bookingMail.some(m=>m.id===id)) continue;
+        state.bookingMail.push({id,bookingId:booking.id,memberId:member.id,to:member.email,kind:"reminder",status:"pending",createdAt:now.toISOString(),
+          subject:"Please sign your contract · "+booking.act+" · "+booking.date,
+          body:"Please review and sign your agreement before the performance.\n\nhttps://dmf-eta.vercel.app/register/"+bookingHmac("stagebook-booking-contract:"+invite.id,props)});
+      }
+    }
+  }
+}
+function processBookingMail(book,state,props) {
+  const delivery = {sent:0,failed:0};
+  const completed = [];
+  let quota;
+  try { quota = MailApp.getRemainingDailyQuota(); }
+  catch (error) { quota = 0; }
+  for (const mail of state.bookingMail || []) {
+    if (mail.status!=="pending") continue;
+    // Let a sheet row settle before sending its first invitation while it is being entered.
+    if (mail.kind==="invitation" && Date.now()-Date.parse(mail.createdAt)<60000) continue;
+    const booking = (state.bookings || []).find(b=>b.id===mail.bookingId);
+    if (!booking || booking.cancelled || booking.sourceError) { mail.status="failed"; mail.error="Booking is cancelled or needs attention."; delivery.failed++; continue; }
+    if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="failed"; mail.error="Booking changed. Use its current invitation."; delivery.failed++; continue; }
+    if (mail.kind==="reminder" && mail.memberId) {
+      const member = booking.members.find(m=>m.id===mail.memberId);
+      const invite = member && state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt && i.bookingVersion===booking.version);
+      if (!invite) { mail.status="failed"; mail.error="Signature no longer needed."; continue; }
+    }
+    if (mail.kind==="contract") {
+      const invite = state.invites.find(i=>i.id===mail.id.slice(9));
+      if (!invite || invite.revoked || invite.signedAt || invite.bookingVersion!==booking.version) { mail.status="failed"; mail.error="Agreement is no longer awaiting signature."; delivery.failed++; continue; }
+    }
+    if (mail.kind==="verification" && Date.now()-Date.parse(mail.createdAt)>30*60000) { mail.status="failed"; mail.error="Verification expired. Request a new link."; delivery.failed++; continue; }
+    const key="stagebook-booking-mail:"+mail.id;
+    const reserved=props.getProperty(key);
+    if (reserved && reserved!=="sending") {
+      mail.status="sent"; mail.sentAt=reserved; completed.push(key); delivery.sent++; continue;
+    }
+    if (reserved) { mail.status="uncertain"; mail.error="Google did not confirm sending. Copy the link to share manually."; delivery.failed++; continue; }
+    if (quota<1) { mail.error="Email quota or permission unavailable. Automatic delivery will retry."; delivery.failed++; continue; }
+    props.setProperty(key,"sending");
+    try {
+      MailApp.sendEmail({to:mail.to,replyTo:state.venue.email,name:state.venue.name,subject:mail.subject,body:mail.body});
+      mail.status="sent"; mail.sentAt=new Date().toISOString(); mail.error=undefined; quota--; delivery.sent++;
+      props.setProperty(key,mail.sentAt); completed.push(key);
+      if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="failed"; mail.error="Booking changed. Use its current invitation."; delivery.failed++; continue; }
+    if (mail.kind==="reminder" && mail.memberId) {
+      const member = booking.members.find(m=>m.id===mail.memberId);
+      const invite = member && state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt && i.bookingVersion===booking.version);
+      if (!invite) { mail.status="failed"; mail.error="Signature no longer needed."; continue; }
+    }
+    if (mail.kind==="contract") {
+        const invite=state.invites.find(i=>i.id===mail.id.slice(9));
+        if (invite) invite.emailSentAt=mail.sentAt;
+      }
+    } catch (error) {
+      const code=contractEmailError(error);
+      mail.status=code==="MAIL_UNCERTAIN" ? "uncertain" : "failed";
+      mail.error=code; delivery.failed++;
+      if (code!=="MAIL_UNCERTAIN") props.deleteProperty(key);
+    }
+  }
+  writeBookingState(book,state);
+  for (const key of completed) props.deleteProperty(key);
+  return {ok:true,state,delivery};
 }

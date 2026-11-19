@@ -1,3 +1,4 @@
+import type { Booking, BookingMail, BookingVerification } from "./bookings.ts";
 import { z } from "zod";
 
 const text = z.string().trim().max(300);
@@ -144,6 +145,9 @@ export type ContractOffer = Omit<
 
 export type SignedContract = {
   id: string;
+  bookingId?: string;
+  bookingVersion?: number;
+  memberId?: string;
   paymentId?: string;
   musicianId: string;
   offer: ContractOffer;
@@ -181,6 +185,8 @@ export type Payment = z.infer<typeof paymentSchema> & {
   recordedAt: string;
   voidReason?: string;
   batchId?: string;
+  bookingId?: string;
+  memberId?: string;
 };
 export type Invite = {
   id: string;
@@ -191,6 +197,9 @@ export type Invite = {
   offer?: ContractOffer;
   signedAt?: string;
   registration?: true;
+  bookingId?: string;
+  bookingVersion?: number;
+  memberId?: string;
   paymentId?: string;
   performer?: SignedContract["performer"];
   emailSentAt?: string;
@@ -202,6 +211,9 @@ export type Workspace = {
   payments: Payment[];
   invites: Invite[];
   contracts?: SignedContract[];
+  bookings?: Booking[];
+  bookingMail?: BookingMail[];
+  bookingVerifications?: BookingVerification[];
   auth?: { email: string; passwordHash: string };
   attempts?: { key: string; at: number }[];
 };

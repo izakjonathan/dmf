@@ -37,16 +37,31 @@ export async function GET(_req: Request, context: Context) {
   try {
     const state = await readState();
     const invite = findInvite(state, (await context.params).token);
+    if (invite.bookingId) {
+      const booking = state.bookings?.find((b) => b.id === invite.bookingId);
+      if (
+        !booking ||
+        booking.cancelled ||
+        booking.sourceError ||
+        booking.version !== invite.bookingVersion ||
+        booking.approvedVersion !== booking.version
+      )
+        throw new RequestError(
+          "This agreement was replaced or cancelled. Contact the venue for the current version.",
+          409,
+        );
+    }
     const offer = registrationOffer(invite);
     const { performerEmail, ...publicOffer } = offer ?? {};
-    const profile = invite.paymentId
-      ? undefined
-      : state.musicians.find((item) => item.id === invite.musicianId);
+    const profile =
+      invite.paymentId || invite.bookingId
+        ? undefined
+        : state.musicians.find((item) => item.id === invite.musicianId);
     const { name, legalName, email, collectCpr } = state.venue;
     return json({
       venue: { name, legalName, email, collectCpr },
       offer: offer ? publicOffer : null,
-      signingOnly: Boolean(invite.paymentId),
+      signingOnly: Boolean(invite.paymentId || invite.bookingId),
       performerName: invite.performer?.name,
       performance: invite.offer?.artistPerformance
         ? state.musicians.find((item) => item.id === invite.musicianId)
@@ -74,13 +89,27 @@ export async function POST(req: Request, context: Context) {
     sameOrigin(req);
     const state = await readState();
     const invite = findInvite(state, (await context.params).token);
+    if (invite.bookingId) {
+      const booking = state.bookings?.find((b) => b.id === invite.bookingId);
+      if (
+        !booking ||
+        booking.cancelled ||
+        booking.sourceError ||
+        booking.version !== invite.bookingVersion ||
+        booking.approvedVersion !== booking.version
+      )
+        throw new RequestError(
+          "This agreement was replaced or cancelled. Contact the venue for the current version.",
+          409,
+        );
+    }
     const offer = registrationOffer(invite);
     const body = await req.json();
     const performance =
       !offer || offer.artistPerformance
         ? artistPerformanceSchema.parse(body.performance)
         : undefined;
-    if (invite.paymentId) {
+    if (invite.paymentId || invite.bookingId) {
       if (!offer || !invite.performer || !invite.musicianId)
         throw new RequestError(
           "This contract is missing details. Contact the venue.",
@@ -99,6 +128,9 @@ export async function POST(req: Request, context: Context) {
       const contract: SignedContract = {
         id: invite.id,
         paymentId: invite.paymentId,
+        bookingId: invite.bookingId,
+        bookingVersion: invite.bookingVersion,
+        memberId: invite.memberId,
         musicianId: invite.musicianId,
         offer: { ...offer, ...performance },
         performer: invite.performer,

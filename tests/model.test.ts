@@ -356,6 +356,7 @@ test("Sheets sync writes numeric dates, times and DKK while keeping custom forma
     {
       state,
       book: {
+        getSheets: () => [],
         getId: () => "book",
         getSpreadsheetTimeZone: () => "Europe/Copenhagen",
         getSheetByName: (name: string) => ({

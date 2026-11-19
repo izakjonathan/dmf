@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  dispatchBookingMail,
   admin,
   fail,
   hash,
@@ -82,6 +83,20 @@ function workspaceResponse(state: Workspace) {
 
 function activePaymentInvite(state: Workspace, id: string) {
   const invite = state.invites.find((item) => item.id === id);
+  if (invite?.bookingId) {
+    const booking = state.bookings?.find((b) => b.id === invite.bookingId);
+    if (
+      !booking ||
+      booking.cancelled ||
+      booking.sourceError ||
+      booking.approvedVersion !== booking.version ||
+      invite.bookingVersion !== booking.version ||
+      invite.signedAt ||
+      invite.revoked
+    )
+      throw new RequestError("This signing link is no longer active.", 409);
+    return invite;
+  }
   if (
     !invite?.paymentId ||
     !invite.offer ||
@@ -210,8 +225,25 @@ export async function POST(req: Request) {
         state.invites.push(...invites);
         return deliver(await writeState(state), invites);
       }
-      case "sendContract":
-        return deliver(state, [activePaymentInvite(state, input.data.id)]);
+      case "sendContract": {
+        const invite = activePaymentInvite(state, input.data.id);
+        if (invite.bookingId) {
+          const mail = state.bookingMail?.find(
+            (m) => m.id === "contract:" + invite.id,
+          );
+          if (mail?.status === "failed") {
+            mail.status = "pending";
+            mail.error = undefined;
+            await writeState(state);
+          }
+          const result = await dispatchBookingMail();
+          return json({
+            ...workspaceResponse(result.state),
+            delivery: result.delivery,
+          });
+        }
+        return deliver(state, [invite]);
+      }
       case "musician": {
         const error = updateMusician(state, input.data);
         if (error) throw new RequestError(error, 409);
@@ -263,6 +295,12 @@ export async function POST(req: Request) {
             "Correct the related refund before voiding this payment.",
           );
         payment.voidReason = input.data.reason;
+        if (payment.bookingId) {
+          const member = state.bookings
+            ?.find((b) => b.id === payment.bookingId)
+            ?.members.find((m) => m.paymentId === payment.id);
+          if (member) member.paymentId = undefined;
+        }
         for (const invite of state.invites)
           if (invite.paymentId === payment.id && !invite.signedAt)
             invite.revoked = true;

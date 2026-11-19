@@ -23,6 +23,7 @@ import {
   type Venue,
 } from "@/lib/model";
 
+import Bookings from "./Bookings";
 import { ViewportTheme } from "./ViewportTheme";
 import { BankFields } from "./BankFields";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
@@ -51,6 +52,7 @@ const deliveryMessages: Record<string, string> = {
 };
 
 type Page =
+  | "Bookings"
   | "Overview"
   | "Musicians"
   | "Payments"
@@ -63,6 +65,7 @@ type Modal =
   | { kind: "musician"; profile: Musician; collectCpr: boolean }
   | { kind: "void"; payment: Payment };
 const pages: Page[] = [
+  "Bookings",
   "Overview",
   "Musicians",
   "Payments",
@@ -105,7 +108,7 @@ export function Brand() {
   );
 }
 export default function Dashboard() {
-  const [page, setPage] = useState<Page>("Overview");
+  const [page, setPage] = useState<Page>("Bookings");
   const [mode, setMode] = useState<
     "loading" | "connect" | "setup" | "login" | "app"
   >("loading");
@@ -119,12 +122,6 @@ export default function Dashboard() {
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
   const [actionsOpen, setActionsOpen] = useState(false);
-  const [registrationLink, setRegistrationLink] = useState<{
-    path: string;
-    expiresAt: string;
-  } | null>(null);
-  const [creatingLink, setCreatingLink] = useState(false);
-  const [copyUrl, setCopyUrl] = useState("");
   const [signingUrl, setSigningUrl] = useState("");
   const [emailCheck, setEmailCheck] = useState<{
     mail: string;
@@ -137,8 +134,6 @@ export default function Dashboard() {
   const loadWorkspace = useCallback(async () => {
     const result = await request("/api/workspace");
     setWorkspace(result.workspace);
-    setRegistrationLink(result.registrationLink);
-    setCopyUrl("");
   }, []);
 
   async function updateGoogleSheet() {
@@ -223,8 +218,6 @@ export default function Dashboard() {
     try {
       const result = await request("/api/workspace", { action, data: values });
       setWorkspace(result.workspace);
-      setRegistrationLink(result.registrationLink);
-      setCopyUrl("");
       dialog.current?.close();
       setModal(null);
       if (result.delivery) {
@@ -313,83 +306,6 @@ export default function Dashboard() {
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
-    }
-  }
-  async function copyRegistration() {
-    if (!data.venue.legalName) {
-      go("Venue");
-      setError("Save your venue details before getting a registration link.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    if (
-      registrationLink &&
-      registrationLink.expiresAt > new Date().toISOString()
-    ) {
-      const url = location.origin + registrationLink.path;
-      try {
-        await navigator.clipboard.writeText(url);
-        setCopyUrl("");
-        setActionsOpen(false);
-        actionToggle.current?.focus();
-        setNotice("Registration link copied.");
-      } catch {
-        setCopyUrl(url);
-        setActionsOpen(true);
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    setCopyUrl("");
-    setCreatingLink(true);
-    const link = request("/api/workspace", { action: "invite", data: {} }).then(
-      (result) => {
-        setWorkspace(result.workspace);
-        setRegistrationLink(result.registrationLink);
-        return location.origin + result.registrationLink.path;
-      },
-    );
-    // Safari requires the clipboard write itself to start in the click handler.
-    let clipboard: Promise<boolean> | undefined;
-    try {
-      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-        const clipboardData = link.then(
-          (url) => new Blob([url], { type: "text/plain" }),
-        );
-        void clipboardData.catch(() => {});
-        clipboard = navigator.clipboard
-          .write([new ClipboardItem({ "text/plain": clipboardData })])
-          .then(
-            () => true,
-            () => false,
-          );
-      }
-    } catch {
-      // Try the plain-text clipboard API after the link is ready.
-    }
-    try {
-      const url = await link;
-      if (!(await clipboard)) {
-        try {
-          await navigator.clipboard.writeText(url);
-        } catch {
-          setCopyUrl(url);
-          setActionsOpen(true);
-          return;
-        }
-      }
-      setCopyUrl("");
-      setActionsOpen(false);
-      actionToggle.current?.focus();
-      setNotice("Registration link copied.");
-    } catch (e) {
-      setActionsOpen(false);
-      setError((e as Error).message);
-    } finally {
-      setCreatingLink(false);
       setBusy(false);
     }
   }
@@ -562,8 +478,6 @@ export default function Dashboard() {
           disabled={busy}
           onClick={async () => {
             setActionsOpen(false);
-            setCopyUrl("");
-            setRegistrationLink(null);
             setSigningUrl("");
             setEmailCheck(undefined);
             go("Overview");
@@ -592,6 +506,7 @@ export default function Dashboard() {
               {error}
             </p>
           )}
+          {page === "Bookings" && <Bookings />}
           {page === "Overview" && (
             <>
               <div className="stats">
@@ -656,6 +571,17 @@ export default function Dashboard() {
           )}
           {page === "Payments" && (
             <section aria-label="Payment history">
+              <Bookings payments onPaid={() => void loadWorkspace()} />
+              <div className="section-title booking-date">
+                <h2>Payment history</h2>
+                <button
+                  className="link"
+                  disabled={busy}
+                  onClick={() => setModal({ kind: "payment" })}
+                >
+                  Record other payment
+                </button>
+              </div>
               <input
                 className="search"
                 placeholder="Search payments"
@@ -861,30 +787,8 @@ export default function Dashboard() {
             className="quick-menu"
             aria-label="Workspace actions"
           >
-            <button
-              disabled={busy}
-              onClick={() => {
-                setActionsOpen(false);
-                actionToggle.current?.focus();
-                setError("");
-                setModal({ kind: "payment" });
-              }}
-            >
-              Add payment
-            </button>
-            <button disabled={busy} onClick={() => void copyRegistration()}>
-              {creatingLink ? "Creating link…" : "Get registration link"}
-            </button>
-            {copyUrl && (
-              <label className="clipboard-fallback">
-                Copy this link manually
-                <input
-                  value={copyUrl}
-                  readOnly
-                  onFocus={(event) => event.currentTarget.select()}
-                />
-              </label>
-            )}
+            <button onClick={() => go("Bookings")}>View bookings</button>
+            <button onClick={() => go("Payments")}>Pending payments</button>
           </div>
         )}
       </div>

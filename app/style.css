@@ -15,9 +15,9 @@
 }
 
 :root {
-  --navy: #EBEBEB;
-  --blue: #EBEBEB;
-  --cream: #0D0D0D;
+  --navy: #ebebeb;
+  --blue: #ebebeb;
+  --cream: #0d0d0d;
   --background: var(--navy);
   --ink: var(--cream);
   --display: Agilera, Georgia, serif;
@@ -888,5 +888,71 @@ input[type="time"]::-webkit-date-and-time-value {
 
   .contract-receipt :is(p, dt, dd, a) {
     color: black;
+  }
+}
+
+.booking-toolbar,
+.booking-filters {
+  margin: 0 0 20px;
+}
+.booking-toolbar {
+  flex-wrap: wrap;
+}
+.booking-date {
+  margin: 24px 0 16px;
+}
+.booking-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 16px 0;
+}
+.booking-schedule p {
+  flex-basis: 100%;
+}
+.booking-form {
+  border-top: 1px solid var(--rule);
+  margin-top: 20px;
+  padding-top: 16px;
+}
+.booking-form summary {
+  cursor: pointer;
+  margin-bottom: 12px;
+}
+.booking-act > p {
+  margin-top: 10px;
+}
+.booking-account {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.booking-filters {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.booking-filters button {
+  font-size: 12px;
+  min-height: 36px;
+}
+.payment-confirm {
+  border-top: 2px solid var(--ink);
+}
+.booking-workspace .musician-row {
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  border-radius: 0;
+}
+.booking-workspace .musician-row small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+}
+@media (min-width: 560px) {
+  nav {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 }

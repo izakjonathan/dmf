@@ -63,7 +63,7 @@ export function fail(error: unknown) {
     502,
   );
 }
-async function sheets(action: string, data: object = {}) {
+export async function sheets(action: string, data: object = {}) {
   if (!configured())
     throw new RequestError("Connect the Google Sheet first.", 503);
   const endpoint = process.env.GOOGLE_SCRIPT_URL!;
@@ -109,6 +109,11 @@ async function sheets(action: string, data: object = {}) {
         : "The deployed Apps Script didn’t report email status. Update Code.gs and deploy a new version of the existing web app.",
       503,
     );
+  if (!result.ok && (action === "syncBookings" || action === "bookingMail"))
+    throw new RequestError(
+      "Update Code.gs in Apps Script, deploy a new version and run setupBookingAutomation to enable bookings.",
+      503,
+    );
   if (!result.ok)
     throw new RequestError(
       action === "write"
@@ -126,8 +131,14 @@ export function paymentSigningToken(id: string) {
   return sign("stagebook-payment-contract:" + id, process.env.AUTH_SECRET!);
 }
 
-export function paymentSigningPath(invite: { id: string; hash: string }) {
-  const raw = paymentSigningToken(invite.id);
+export function paymentSigningPath(invite: {
+  id: string;
+  hash: string;
+  bookingId?: string;
+}) {
+  const raw = invite.bookingId
+    ? bookingContractToken(invite.id)
+    : paymentSigningToken(invite.id);
   if (!equals(hash(raw), invite.hash))
     throw new RequestError(
       "This link was issued with a previous signing key. Use the original link.",
@@ -239,4 +250,17 @@ export async function probeContractEmail() {
           : "unavailable",
     };
   }
+}
+
+export function bookingToken(id: string) {
+  return sign("stagebook-booking:" + id, process.env.GOOGLE_SCRIPT_SECRET!);
+}
+export function bookingContractToken(id: string) {
+  return sign(
+    "stagebook-booking-contract:" + id,
+    process.env.GOOGLE_SCRIPT_SECRET!,
+  );
+}
+export async function dispatchBookingMail() {
+  return sheets("bookingMail");
 }
