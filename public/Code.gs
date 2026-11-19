@@ -328,6 +328,14 @@ function applyDefaultFormats(requests,sheetId,rows,formats,existing) {
 }
 function writeWorkbook(book,state) {
   const tables = rowsFor(state);
+  let createdSheet = false;
+  for (const name of ["Contracts","Booking members","Booking payments","Booking emails"]) {
+    if (!book.getSheetByName(name)) {
+      book.insertSheet(name);
+      createdSheet = true;
+    }
+  }
+  if (createdSheet) SpreadsheetApp.flush();
   const existingFormats = currentColumnFormats(book,tables);
   const timeZone = book.getSpreadsheetTimeZone();
   const encoded = Utilities.base64Encode(JSON.stringify(state), Utilities.Charset.UTF_8);
@@ -335,22 +343,14 @@ function writeWorkbook(book,state) {
   for(let i=0; i<encoded.length; i+=40000) storage.push([encoded.slice(i,i+40000)]);
   tables._Stagebook = storage;
   const requests = [];
-  const usedSheetIds = new Set(book.getSheets().map(item => item.getSheetId()));
   for (const name of Object.keys(tables)) {
     const sheet = book.getSheetByName(name);
     const rows = tables[name];
-    let sheetId;
-    if (!sheet && ["Contracts","Booking members","Booking payments","Booking emails"].includes(name)) {
-      sheetId = 1;
-      while (usedSheetIds.has(sheetId)) sheetId++;
-      usedSheetIds.add(sheetId);
-      requests.push({addSheet:{properties:{sheetId,title:name,gridProperties:{rowCount:Math.max(1000,rows.length),columnCount:26}}}});
-    } else {
-      if (name === "Contracts" && sheet.getLastRow() && sheet.getRange("A1").getValue() !== rows[0][0]) {
-        throw Error("Rename the existing Contracts tab to avoid overwriting unrelated data.");
-      }
-      sheetId = sheet.getSheetId();
+    if (!sheet) throw Error("Missing required sheet: " + name + ". Run initialize first.");
+    if (name === "Contracts" && sheet.getLastRow() && sheet.getRange("A1").getValue() !== rows[0][0]) {
+      throw Error("Rename the existing Contracts tab to avoid overwriting unrelated data.");
     }
+    const sheetId = sheet.getSheetId();
     if (sheet && rows.length > sheet.getMaxRows()) {
       requests.push({updateSheetProperties:{properties:{sheetId,gridProperties:{rowCount:rows.length}},fields:"gridProperties.rowCount"}});
     }

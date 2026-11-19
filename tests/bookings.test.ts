@@ -437,3 +437,74 @@ test("deleting a booking row flags it for attention rather than losing its membe
   assert.equal(state.bookings?.length, 1);
   assert.match(state.bookings![0].sourceError!, /row is missing/);
 });
+
+test("missing booking tabs get Google-assigned IDs and are reused on retries", () => {
+  const state = demoWorkspace();
+  state.musicians = [];
+  state.payments = [];
+  const sheets = new Map<string, any>();
+  let nextId = 100;
+  const created: string[] = [];
+  function sheet(id: number) {
+    return {
+      getSheetId: () => id,
+      getLastRow: () => 0,
+      getMaxRows: () => 1000,
+    };
+  }
+  for (const [name, id] of [
+    ["Venue", 7],
+    ["Musicians", 9],
+    ["Payments", 1],
+    ["Summary", 0],
+    ["_Stagebook", 4],
+  ] as const)
+    sheets.set(name, sheet(id));
+  const batches: any[][] = [];
+  const book = {
+    getId: () => "test-book",
+    getSpreadsheetTimeZone: () => "Europe/Copenhagen",
+    getSheetByName: (name: string) => sheets.get(name),
+    insertSheet: (name: string) => {
+      assert.ok(!sheets.has(name));
+      created.push(name);
+      const s = sheet(nextId++);
+      sheets.set(name, s);
+      return s;
+    },
+  };
+  const context = {
+    state,
+    book,
+    SpreadsheetApp: { flush: () => {} },
+    Utilities: {
+      Charset: { UTF_8: "UTF-8" },
+      base64Encode: (value: string) => Buffer.from(value).toString("base64"),
+    },
+    Sheets: {
+      Spreadsheets: {
+        batchUpdate: (body: { requests: any[] }) => batches.push(body.requests),
+      },
+    },
+  };
+  runInNewContext(
+    script + "\nwriteWorkbook(book,state); writeWorkbook(book,state);",
+    context,
+  );
+  assert.deepEqual(created, [
+    "Contracts",
+    "Booking members",
+    "Booking payments",
+    "Booking emails",
+  ]);
+  assert.equal(batches.length, 2);
+  for (const batch of batches) {
+    assert.ok(batch.every((request) => !request.addSheet));
+    const ids = batch
+      .filter((request) => request.updateCells)
+      .map((request) => request.updateCells.range.sheetId);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.ok(ids.includes(1));
+    assert.ok(ids.includes(100));
+  }
+});
