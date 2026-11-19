@@ -220,29 +220,6 @@ th {
   font-size: 13px;
 }
 
-nav {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px 4px;
-  margin-bottom: 15px;
-  border-bottom: 1px solid var(--rule);
-}
-
-nav button {
-  min-width: 0;
-  padding-inline: 6px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-nav button[aria-current="page"] {
-  background: var(--surface);
-  color: var(--ink);
-}
-
 .content,
 .panel {
   min-width: 0;
@@ -783,10 +760,6 @@ label small {
 }
 
 @media (min-width: 560px) {
-  nav {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-
   .gate .grid,
   .dialog .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -951,11 +924,6 @@ input[type="time"]::-webkit-date-and-time-value {
   color: var(--muted);
   margin-top: 4px;
 }
-@media (min-width: 560px) {
-  nav {
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-  }
-}
 
 /* Bookings: a compact running order for the employee on shift. */
 .booking-day-acts {
@@ -977,30 +945,6 @@ input[type="time"]::-webkit-date-and-time-value {
   text-transform: none;
   letter-spacing: normal;
   font-weight: 400;
-}
-.night-act {
-  padding: 22px 0;
-  border-top: 1px solid var(--rule);
-}
-.night-act-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-.night-act-heading h3 {
-  margin: 0;
-  font-size: 19px;
-  line-height: 1.2;
-  font-weight: 620;
-  letter-spacing: -0.035em;
-  overflow-wrap: anywhere;
-}
-.night-time {
-  flex-shrink: 0;
-  font-size: 17px;
-  font-variant-numeric: tabular-nums;
 }
 .night-members-label {
   margin-bottom: 5px;
@@ -1050,4 +994,236 @@ input[type="time"]::-webkit-date-and-time-value {
 }
 .night-contract-status {
   margin: 16px 0;
+}
+
+/* Compact header navigation. Native popover handles outside click and Escape. */
+.workspace-header h1 {
+  flex: 1;
+}
+.workspace-menu-wrap {
+  flex: none;
+}
+.workspace-header .workspace-menu-toggle {
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
+  padding: 11px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+}
+.workspace-menu-toggle > span {
+  display: grid;
+  gap: 4px;
+  width: 19px;
+}
+.workspace-menu-toggle i {
+  height: 1.5px;
+  width: 100%;
+  background: currentColor;
+  border-radius: 2px;
+}
+.workspace-menu-popup {
+  position: fixed;
+  inset: 66px max(16px, calc((100vw - 668px) / 2)) auto auto;
+  width: min(260px, calc(100vw - 32px));
+  margin: 0;
+  padding: 7px;
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  background: var(--background);
+  color: var(--ink);
+  box-shadow: 0 16px 48px #0002, 0 3px 10px #0001;
+}
+.workspace-menu-popup nav {
+  display: grid;
+  gap: 3px;
+}
+.workspace-menu-popup nav button {
+  justify-content: space-between;
+  padding: 12px 14px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  font-size: 14px;
+}
+.workspace-menu-popup nav button:hover,
+.workspace-menu-popup nav button[aria-current="page"] {
+  background: var(--surface);
+  color: var(--ink);
+}
+.workspace-menu-popup nav button[aria-current="page"]::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+@media (min-width: 900px) {
+  .workspace-menu-popup {
+    right: max(24px, calc((100vw - 832px) / 2));
+  }
+}
+
+/* Date and act cards retain the useful summary when closed. */
+.booking-toolbar {
+  justify-content: space-between;
+  gap: 8px 14px;
+  padding-block: 8px;
+}
+.booking-toolbar .check {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.booking-day-list {
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.booking-day-list > li,
+.booking-day-card {
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--background) 97%, var(--ink));
+  overflow: clip;
+}
+.booking-day-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 19px 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-weight: 400;
+}
+.booking-day-summary:hover {
+  background: var(--surface);
+}
+.booking-day-summary strong {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+.booking-day-caption,
+.act-card-summary small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+.booking-day-meta,
+.act-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+  color: var(--muted);
+}
+.booking-day-meta small {
+  font-size: 12px;
+}
+.card-chevron {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 5px 3px 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+[aria-expanded="true"] > .card-chevron,
+.booking-act-card[open] > summary .card-chevron {
+  transform: rotate(225deg);
+}
+.booking-day-body {
+  border-top: 1px solid var(--rule);
+  padding: 14px;
+}
+.booking-day-body .night-employee {
+  margin: 4px 4px 18px;
+}
+.night-view {
+  display: grid;
+  gap: 12px;
+}
+.booking-act-card {
+  margin: 0 0 12px;
+  border: 1px solid var(--rule);
+  border-radius: 13px;
+  background: var(--background);
+  overflow: clip;
+}
+.night-view > .booking-act-card {
+  margin: 0;
+}
+.act-card-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 17px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+.act-card-summary::-webkit-details-marker {
+  display: none;
+}
+.act-card-summary strong {
+  font-size: 16px;
+  font-weight: 620;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+.act-card-meta time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.act-card-body {
+  border-top: 1px solid var(--rule);
+  padding: 16px;
+}
+.act-card-body > .fine:last-child {
+  margin-bottom: 0;
+}
+.night-members {
+  font-size: 14px;
+}
+.night-contract summary {
+  font-size: 13px;
+  line-height: 1.4;
+}
+.booking-day-acts {
+  font-size: 14px;
+  line-height: 1.4;
+}
+@media (max-width: 380px) {
+  .act-card-summary {
+    gap: 10px;
+    padding: 15px 12px;
+  }
+  .act-card-meta {
+    gap: 7px;
+  }
+  .booking-day-body {
+    padding: 10px;
+  }
 }

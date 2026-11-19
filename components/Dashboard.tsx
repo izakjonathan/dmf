@@ -130,6 +130,7 @@ export default function Dashboard() {
   }>();
   const [emailChecking, setEmailChecking] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
+  const navigation = useRef<HTMLDivElement>(null);
   const actions = useRef<HTMLDivElement>(null);
   const actionToggle = useRef<HTMLButtonElement>(null);
   const loadWorkspace = useCallback(async () => {
@@ -208,6 +209,7 @@ export default function Dashboard() {
     };
   }, [actionsOpen]);
   function go(next: Page) {
+    navigation.current?.hidePopover();
     setActionsOpen(false);
     setPage(next);
     setSearch("");
@@ -490,19 +492,40 @@ export default function Dashboard() {
         >
           Sign out
         </button>
+        <div className="workspace-menu-wrap">
+          <button
+            className="workspace-menu-toggle"
+            popoverTarget="workspace-menu"
+            aria-label="Open navigation menu"
+            aria-haspopup="true"
+          >
+            <span aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          </button>
+          <div
+            id="workspace-menu"
+            className="workspace-menu-popup"
+            popover="auto"
+            ref={navigation}
+          >
+            <nav aria-label="Workspace">
+              {pages.map((item) => (
+                <button
+                  aria-current={page === item ? "page" : undefined}
+                  key={item}
+                  onClick={() => go(item)}
+                >
+                  {item}
+                </button>
+              ))}
+            </nav>
+          </div>
+        </div>
       </header>
       <main className="main">
-        <nav aria-label="Workspace">
-          {pages.map((item) => (
-            <button
-              aria-current={page === item ? "page" : undefined}
-              key={item}
-              onClick={() => go(item)}
-            >
-              {item}
-            </button>
-          ))}
-        </nav>
         <section className="content">
           {error && !modal && (
             <p className="error" role="alert">
