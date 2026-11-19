@@ -558,3 +558,94 @@ test("Sheets exports artist performance details and payment method in appended c
     "Cash",
   );
 });
+
+test("deleting and restoring a musician preserves history and hides banking data in both lists", async () => {
+  const { setMusicianDeleted } = await import("../lib/model.ts");
+  const state = demoWorkspace();
+  const musician = state.musicians[0];
+  const history = JSON.stringify(state.payments);
+  state.bookings = [
+    {
+      id: crypto.randomUUID(),
+      date: "2026-11-19",
+      act: musician.band,
+      contactEmail: musician.email,
+      expectedMembers: 1,
+      fee: 315000,
+      paymentType: "Bank transfer",
+      dueOn: "2026-11-20",
+      version: 1,
+      members: [
+        {
+          id: crypto.randomUUID(),
+          musicianId: musician.id,
+          name: musician.name,
+          email: musician.email,
+        },
+      ],
+    },
+  ];
+  const bookings = JSON.stringify(state.bookings);
+  const input = { id: musician.id, updatedAt: musician.updatedAt };
+  assert.equal(setMusicianDeleted(state, input, true), null);
+  assert.ok(musician.deletedAt);
+  let client = clientWorkspace(state);
+  assert.ok(!client.musicians.some((m) => m.id === musician.id));
+  const deleted = client.deletedMusicians.find((m) => m.id === musician.id)!;
+  for (const field of ["cpr", "registration", "account", "iban"])
+    assert.ok(!(field in deleted));
+  assert.equal(JSON.stringify(state.payments), history);
+  assert.equal(JSON.stringify(state.bookings), bookings);
+  assert.equal(setMusicianDeleted(state, input, true), null);
+  assert.equal(
+    setMusicianDeleted(
+      state,
+      { id: musician.id, updatedAt: musician.updatedAt },
+      false,
+    ),
+    null,
+  );
+  client = clientWorkspace(state);
+  assert.ok(client.musicians.some((m) => m.id === musician.id));
+  assert.equal(client.deletedMusicians.length, 0);
+  assert.equal(state.musicians.length, 4);
+});
+
+test("musician deletion rejects stale edits and excludes deleted members from new band payments", async () => {
+  const { setMusicianDeleted } = await import("../lib/model.ts");
+  const state = demoWorkspace();
+  const musician = state.musicians[0];
+  assert.match(
+    setMusicianDeleted(
+      state,
+      { id: musician.id, updatedAt: "outdated" },
+      true,
+    )!,
+    /updated elsewhere/,
+  );
+  assert.equal(musician.deletedAt, undefined);
+  const oldMembers = state.musicians
+    .filter((m) => m.band === musician.band)
+    .map((m) => m.id);
+  setMusicianDeleted(
+    state,
+    { id: musician.id, updatedAt: musician.updatedAt },
+    true,
+  );
+  assert.throws(
+    () =>
+      paymentRecords(state, {
+        id: crypto.randomUUID(),
+        target: "band",
+        band: musician.band,
+        memberIds: oldMembers,
+        paidOn: "2026-11-19",
+        performedOn: "2026-11-19",
+        amount: 315000,
+        kind: "Payment",
+        notes: "",
+        reference: "",
+      }),
+    /membership changed/,
+  );
+});

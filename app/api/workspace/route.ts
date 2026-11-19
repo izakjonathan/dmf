@@ -21,6 +21,8 @@ import {
   paymentContractSchema,
   dmfTemplate,
   musicianEditSchema,
+  musicianStatusSchema,
+  setMusicianDeleted,
   net,
   paymentRecords,
   today,
@@ -134,6 +136,11 @@ const request = z.discriminatedUnion("action", [
   z.object({ action: z.literal("venue"), data: venueSchema }),
   z.object({ action: z.literal("payment"), data: z.unknown() }),
   z.object({ action: z.literal("musician"), data: musicianEditSchema }),
+  z.object({ action: z.literal("deleteMusician"), data: musicianStatusSchema }),
+  z.object({
+    action: z.literal("restoreMusician"),
+    data: musicianStatusSchema,
+  }),
   z.object({
     action: z.literal("invite"),
     data: z.object({}),
@@ -243,6 +250,16 @@ export async function POST(req: Request) {
           });
         }
         return deliver(state, [invite]);
+      }
+      case "deleteMusician":
+      case "restoreMusician": {
+        const error = setMusicianDeleted(
+          state,
+          input.data,
+          input.action === "deleteMusician",
+        );
+        if (error) throw new RequestError(error, 409);
+        break;
       }
       case "musician": {
         const error = updateMusician(state, input.data);

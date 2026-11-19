@@ -225,6 +225,7 @@ export async function POST(req: Request, context: Context) {
       const profile = {
         ...existing,
         ...input,
+        deletedAt: undefined,
         id: existing?.id || crypto.randomUUID(),
         cpr: state.venue.collectCpr
           ? input.cpr || existing?.cpr || ""

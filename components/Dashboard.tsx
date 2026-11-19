@@ -121,6 +121,7 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
+  const [showDeletedMusicians, setShowDeletedMusicians] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [signingUrl, setSigningUrl] = useState("");
   const [emailCheck, setEmailCheck] = useState<{
@@ -432,7 +433,9 @@ export default function Dashboard() {
         </div>
       </main>
     );
-  const matching = data.musicians.filter((m) =>
+  const matching = (
+    showDeletedMusicians ? data.deletedMusicians : data.musicians
+  ).filter((m) =>
     [m.name, m.band, m.email]
       .join(" ")
       .toLowerCase()
@@ -541,6 +544,16 @@ export default function Dashboard() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={showDeletedMusicians}
+                  onChange={(event) =>
+                    setShowDeletedMusicians(event.target.checked)
+                  }
+                />
+                Show deleted musicians
+              </label>
               <ul className="musician-list">
                 {matching.map((m) => (
                   <li key={m.id}>
@@ -555,7 +568,7 @@ export default function Dashboard() {
                       </span>
                       <span className="musician-edit">
                         {money(paidByMusician.get(m.id) ?? 0)}
-                        <small>Edit</small>
+                        <small>{m.deletedAt ? "Restore" : "Edit"}</small>
                       </span>
                     </button>
                   </li>
@@ -563,8 +576,9 @@ export default function Dashboard() {
               </ul>
               {!matching.length && (
                 <div className="panel">
-                  No matching musicians. Share a registration link to add
-                  musicians.
+                  {showDeletedMusicians
+                    ? "No deleted musicians match your search."
+                    : "No matching musicians. Invite musicians using a booking link."}
                 </div>
               )}
             </>
@@ -839,6 +853,18 @@ export default function Dashboard() {
                 profile={modal.profile}
                 collectCpr={modal.collectCpr}
                 busy={busy}
+                remove={() =>
+                  void mutate("deleteMusician", {
+                    id: modal.profile.id,
+                    updatedAt: modal.profile.updatedAt,
+                  })
+                }
+                restore={() =>
+                  void mutate("restoreMusician", {
+                    id: modal.profile.id,
+                    updatedAt: modal.profile.updatedAt,
+                  })
+                }
                 save={(profile) =>
                   void mutate("musician", {
                     id: modal.profile.id,
@@ -1151,13 +1177,32 @@ function MusicianEditor({
   collectCpr,
   busy,
   save,
+  remove,
+  restore,
 }: {
   profile: Musician;
   collectCpr: boolean;
   busy: boolean;
   save: (profile: object) => void;
+  remove: () => void;
+  restore: () => void;
 }) {
   const [payee, setPayee] = useState(profile.payee);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  if (profile.deletedAt)
+    return (
+      <>
+        <h2 id="workspace-dialog-title">Deleted musician</h2>
+        <p>{profile.name}</p>
+        <p className="fine">
+          Restore this musician to make them available in the active musician
+          list.
+        </p>
+        <button disabled={busy} onClick={restore}>
+          {busy ? "Restoring…" : "Restore musician"}
+        </button>
+      </>
+    );
   return (
     <form
       onSubmit={(event) =>
@@ -1233,6 +1278,39 @@ function MusicianEditor({
       </div>
       <BankFields profile={profile} />
       <button disabled={busy}>{busy ? "Saving…" : "Save musician"}</button>
+      <div className="booking-form">
+        {confirmDelete ? (
+          <>
+            <p>Delete {profile.name} from the active musician list?</p>
+            <p className="fine">
+              Bookings, contracts and payment history are retained. You can
+              restore the musician under Show deleted musicians.
+            </p>
+            <div className="row">
+              <button type="button" disabled={busy} onClick={remove}>
+                Confirm delete
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => setConfirmDelete(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="link"
+            disabled={busy}
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete musician
+          </button>
+        )}
+      </div>
     </form>
   );
 }
@@ -1324,11 +1402,14 @@ function Reports({ workspace }: { workspace: ClientWorkspace }) {
             onChange={(e) => setMusician(e.target.value)}
           >
             <option value="">All musicians</option>
-            {workspace.musicians.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
+            {[...workspace.musicians, ...workspace.deletedMusicians].map(
+              (m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                  {m.deletedAt ? " (deleted)" : ""}
+                </option>
+              ),
+            )}
           </select>
         </Field>
         <Field label="Band">

@@ -181,6 +181,7 @@ export type Musician = Omit<z.infer<typeof musicianSchema>, "iban"> & {
   id: string;
   createdAt: string;
   updatedAt: string;
+  deletedAt?: string;
 };
 export type Payment = z.infer<typeof paymentSchema> & {
   name: string;
@@ -316,7 +317,8 @@ export function paymentRecords(state: Workspace, input: unknown): Payment[] {
   )
     throw Error("This band payment is already recorded.");
   const members = state.musicians.filter(
-    (musician) => bandKey(musician.band) === bandKey(details.band),
+    (musician) =>
+      !musician.deletedAt && bandKey(musician.band) === bandKey(details.band),
   );
   const selected = new Set(memberIds);
   if (
@@ -352,6 +354,8 @@ export function updateMusician(
   const index = state.musicians.findIndex(({ id }) => id === input.id);
   const current = state.musicians[index];
   if (!current) return "Musician not found.";
+  if (current.deletedAt)
+    return "Restore this musician before editing their details.";
   if (current.updatedAt !== input.updatedAt)
     return "This musician was updated elsewhere. Close and reopen their details.";
   if (
@@ -371,7 +375,36 @@ export function updateMusician(
   return null;
 }
 
+export const musicianStatusSchema = musicianEditSchema.omit({ profile: true });
+export function setMusicianDeleted(
+  state: Workspace,
+  input: z.infer<typeof musicianStatusSchema>,
+  deleted: boolean,
+) {
+  const musician = state.musicians.find((item) => item.id === input.id);
+  if (!musician) return "Musician not found.";
+  if (Boolean(musician.deletedAt) === deleted) return null;
+  if (musician.updatedAt !== input.updatedAt)
+    return "This musician was updated elsewhere. Close and reopen their details.";
+  const at = new Date().toISOString();
+  musician.updatedAt = at;
+  if (deleted) {
+    musician.deletedAt = at;
+    for (const invite of state.invites)
+      if (
+        invite.musicianId === musician.id &&
+        !invite.offer &&
+        !invite.signedAt
+      )
+        invite.revoked = true;
+  } else delete musician.deletedAt;
+  return null;
+}
+
 export function clientWorkspace(state: Workspace) {
+  const publicMusicians = state.musicians.map(
+    ({ cpr, registration, account, iban, ...musician }) => musician,
+  );
   return {
     revision: state.revision,
     venue: state.venue,
@@ -386,8 +419,9 @@ export function clientWorkspace(state: Workspace) {
       performer: contract.performer.name,
       date: contract.offer.performanceDate,
     })),
-    musicians: state.musicians.map(
-      ({ cpr, registration, account, iban, ...musician }) => musician,
+    musicians: publicMusicians.filter((musician) => !musician.deletedAt),
+    deletedMusicians: publicMusicians.filter((musician) =>
+      Boolean(musician.deletedAt),
     ),
   };
 }
