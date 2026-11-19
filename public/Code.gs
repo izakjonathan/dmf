@@ -455,8 +455,8 @@ function nextBookingWeekday(date) {
 }
 function syncBookingRows(book,state,props) {
   const sheet = ensureBookingSheet(book);
-  state.bookings ||= [];
-  state.bookingMail ||= [];
+  state.bookings = state.bookings || [];
+  state.bookingMail = state.bookingMail || [];
   const length = sheet.getLastRow();
   const rows = length < 2 ? [] : sheet.getRange(2,1,length-1,BOOKING_HEADERS.length).getValues();
   const zone = book.getSpreadsheetTimeZone();
@@ -535,7 +535,7 @@ function writeBookingState(book,state) {
 function queueBookingReminders(state,props) {
   const now = new Date();
   const day = Utilities.formatDate(now,"Europe/Copenhagen","yyyy-MM-dd");
-  state.bookingMail ||= [];
+  state.bookingMail = state.bookingMail || [];
   for (const booking of state.bookings || []) {
     if (booking.cancelled || booking.sourceError || booking.date < day || Date.parse(booking.date+"T12:00:00Z") - now.getTime() > 7*86400000) continue;
     if (booking.approvedVersion !== booking.version) {
