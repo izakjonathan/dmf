@@ -1,16 +1,22 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  artistPerformanceSchema,
   dmfTemplate,
   musicianSchema,
   performerSignatureSchema,
   today,
+  type ArtistPerformance,
   type ContractOffer,
   type Musician,
   type SignedContract,
 } from "@/lib/model";
 import { BankFields } from "./BankFields";
-import { ContractReceipt, ContractTerms } from "./Contract";
+import {
+  ArtistPerformanceFields,
+  ContractReceipt,
+  ContractTerms,
+} from "./Contract";
 import { Brand } from "./Dashboard";
 import { ViewportTheme } from "./ViewportTheme";
 type Details = {
@@ -24,6 +30,7 @@ type Details = {
   offer: Omit<ContractOffer, "performerEmail"> | null;
   signingOnly?: boolean;
   performerName?: string;
+  performance?: Partial<ArtistPerformance>;
 };
 function demoDetails(signingOnly: boolean): Details {
   const venue = {
@@ -107,6 +114,10 @@ export default function Registration({ token }: { token: string }) {
     setBusy(true);
     setError("");
     try {
+      const performance =
+        !details?.offer || details.offer.artistPerformance
+          ? artistPerformanceSchema.parse(fields)
+          : undefined;
       if (demo) {
         if (details?.offer) {
           const signed = performerSignatureSchema.parse(signature);
@@ -115,7 +126,7 @@ export default function Registration({ token }: { token: string }) {
             id: "Demo",
             paymentId: "Demo",
             musicianId: "Demo",
-            offer: { ...details.offer, performerEmail: email },
+            offer: { ...details.offer, ...performance, performerEmail: email },
             performer: {
               name: "Example Musician",
               email,
@@ -137,7 +148,7 @@ export default function Registration({ token }: { token: string }) {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...values, signature }),
+          body: JSON.stringify({ ...values, signature, performance }),
         },
       );
       const result = await response.json();
@@ -285,6 +296,11 @@ export default function Registration({ token }: { token: string }) {
                 )}
                 <BankFields />
               </>
+            )}
+            {(!details.offer || details.offer.artistPerformance) && (
+              <ArtistPerformanceFields
+                value={details.performance || details.profile?.performance}
+              />
             )}
             {details.offer && (
               <section

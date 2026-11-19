@@ -37,6 +37,24 @@ export function validIban(iban: string) {
   return remainder === 1;
 }
 
+const clock = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time.");
+export const artistPerformanceSchema = z
+  .object({
+    start: clock,
+    end: clock,
+    soundcheck: z.enum(["Yes", "No"]),
+    sets: z.coerce.number().int().min(1).max(30),
+    minutesPerSet: z.coerce.number().int().min(1).max(720),
+    requests: z.string().trim().max(2000).default(""),
+  })
+  .refine(
+    (value) => value.start !== value.end,
+    "Enter different start and end times.",
+  );
+export type ArtistPerformance = z.infer<typeof artistPerformanceSchema>;
+
 export const musicianSchema = z
   .object({
     name: text.min(2),
@@ -78,27 +96,24 @@ export const dmfTemplate = {
   url: "https://dmf.dk/sites/default/files/paragraph/field_files/Standardkontrakt%20R%C3%98D.pdf",
 } as const;
 
-const clock = z
-  .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time.");
 const accepted = z.literal("on", {
   message: "Confirm that you agree to the contract.",
 });
 export const paymentContractSchema = z
   .object({
-    start: clock,
-    end: clock,
+    start: clock.optional(),
+    end: clock.optional(),
     getIn: z.union([clock, z.literal("")]).default(""),
     soundcheck: z.union([clock, z.literal("")]).default(""),
-    sets: z.coerce.number().int().min(1).max(30),
-    minutesPerSet: z.coerce.number().int().min(1).max(720),
+    sets: z.coerce.number().int().min(1).max(30).optional(),
+    minutesPerSet: z.coerce.number().int().min(1).max(720).optional(),
     returnBy: date,
     specialTerms: z.string().trim().max(2000).default(""),
     organizerSigner: text.min(2, "Enter the organizer signer’s full name."),
     accepted,
   })
   .refine(
-    (value) => value.start !== value.end,
+    (value) => !value.start || !value.end || value.start !== value.end,
     "Enter different start and end times.",
   );
 
@@ -112,6 +127,9 @@ export type ContractOffer = Omit<
   z.infer<typeof paymentContractSchema>,
   "accepted"
 > & {
+  artistPerformance?: boolean;
+  requests?: string;
+  paymentType?: "Cash" | "Bank transfer" | "Mobilepay";
   performerEmail: string;
   performanceDate: string;
   fee: number;
@@ -145,12 +163,14 @@ export const paymentSchema = z.object({
   band: text,
   reference: text,
   amount: z.number().int().positive().max(100000000),
+  paymentType: z.enum(["Cash", "Bank transfer", "Mobilepay"]).optional(),
   kind: z.enum(["Payment", "Refund"]),
   notes: z.string().trim().max(2000),
 });
 export type Venue = z.infer<typeof venueSchema>;
 export type Musician = Omit<z.infer<typeof musicianSchema>, "iban"> & {
   iban?: string;
+  performance?: ArtistPerformance;
   id: string;
   createdAt: string;
   updatedAt: string;

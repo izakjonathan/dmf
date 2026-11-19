@@ -479,3 +479,81 @@ test("Sheets sync writes numeric dates, times and DKK while keeping custom forma
   );
   assert.equal(conversion[2].stringValue, "0000");
 });
+
+test("artist performance details require yes/no soundcheck and valid times", async () => {
+  const { artistPerformanceSchema } = await import("../lib/model.ts");
+  const details = {
+    start: "21:00",
+    end: "00:00",
+    soundcheck: "Yes",
+    sets: "2",
+    minutesPerSet: "45",
+    requests: "One vocal microphone",
+  };
+  const parsed = artistPerformanceSchema.parse(details);
+  assert.equal(parsed.sets, 2);
+  assert.equal(parsed.minutesPerSet, 45);
+  assert.throws(() =>
+    artistPerformanceSchema.parse({ ...details, soundcheck: "19:00" }),
+  );
+  assert.throws(() =>
+    artistPerformanceSchema.parse({ ...details, end: details.start }),
+  );
+  assert.throws(() => artistPerformanceSchema.parse({ ...details, sets: 0 }));
+});
+
+test("band payments retain the selected payment type for every member", () => {
+  const state = demoWorkspace();
+  const members = state.musicians.filter((m) => m.band === "Sofie Lund Trio");
+  const payments = paymentRecords(state, {
+    id: crypto.randomUUID(),
+    target: "band",
+    band: "Sofie Lund Trio",
+    memberIds: members.map((m) => m.id),
+    paidOn: "2026-11-19",
+    performedOn: "2026-11-19",
+    amount: 315000,
+    kind: "Payment",
+    paymentType: "Mobilepay",
+    reference: "",
+    notes: "",
+  });
+  assert.equal(payments.length, 2);
+  assert.ok(
+    payments.every((p) => p.paymentType === "Mobilepay" && p.amount === 315000),
+  );
+});
+
+test("Sheets exports artist performance details and payment method in appended columns", () => {
+  const state = demoWorkspace();
+  state.musicians[0].performance = {
+    start: "21:00",
+    end: "00:00",
+    soundcheck: "No",
+    sets: 2,
+    minutesPerSet: 45,
+    requests: "Vocal microphone",
+  };
+  state.payments[0].paymentType = "Cash";
+  const tables = runInNewContext(
+    readFileSync(new URL("../public/Code.gs", import.meta.url), "utf8") +
+      "\nrowsFor(state)",
+    { state },
+  );
+  assert.equal(
+    tables.Musicians[1][tables.Musicians[0].indexOf("Soundcheck")],
+    "No",
+  );
+  assert.equal(
+    tables.Musicians[1][tables.Musicians[0].indexOf("Starts")],
+    "21:00",
+  );
+  assert.equal(
+    tables.Musicians[1][tables.Musicians[0].indexOf("Requests")],
+    "Vocal microphone",
+  );
+  assert.equal(
+    tables.Payments[1][tables.Payments[0].indexOf("Payment type")],
+    "Cash",
+  );
+});

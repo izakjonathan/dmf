@@ -181,13 +181,13 @@ function rowsFor(state) {
     ["Venue","Legal organizer","Address","CVR","Email","Phone","Default payment reference","Collect CPR"],
     [v.name,v.legalName,v.address,v.cvr,v.email,v.phone,v.reference,v.collectCpr ? "Enabled" : "Disabled"]
   ];
-  const musicians = [["Musician ID","Legal name","Email","Phone","Address","Band","Recipient","CVR","CPR","Bank registration","Bank account","Registered","Updated","IBAN"]];
-  for (const m of state.musicians) musicians.push([m.id,m.name,m.email,m.phone,m.address,m.band,m.payee,m.cvr,m.cpr,m.registration,m.account,m.createdAt,m.updatedAt,m.iban || ""]);
-  const payments = [["Payment ID","Musician ID","Musician","Band at payment","Venue","Paid on","Performance date","Amount DKK","Net DKK","Type","Reference","Notes","Void reason","Recorded at"]];
+  const musicians = [["Musician ID","Legal name","Email","Phone","Address","Band","Recipient","CVR","CPR","Bank registration","Bank account","Registered","Updated","IBAN","Starts","Ends","Soundcheck","Sets","Minutes per set","Requests"]];
+  for (const m of state.musicians) musicians.push([m.id,m.name,m.email,m.phone,m.address,m.band,m.payee,m.cvr,m.cpr,m.registration,m.account,m.createdAt,m.updatedAt,m.iban || "",m.performance?.start || "",m.performance?.end || "",m.performance?.soundcheck || "",m.performance?.sets ?? "",m.performance?.minutesPerSet ?? "",m.performance?.requests || ""]);
+  const payments = [["Payment ID","Musician ID","Musician","Band at payment","Venue","Paid on","Performance date","Amount DKK","Net DKK","Type","Reference","Notes","Void reason","Recorded at","Payment type"]];
   const groups = new Map();
   for (const p of state.payments) {
     const net = paymentNet(p);
-    payments.push([p.id,p.musicianId,p.name,p.band,p.venue,p.paidOn,p.performedOn,p.amount/100,net/100,p.kind,p.reference,p.notes,p.voidReason||"",p.recordedAt]);
+    payments.push([p.id,p.musicianId,p.name,p.band,p.venue,p.paidOn,p.performedOn,p.amount/100,net/100,p.kind,p.reference,p.notes,p.voidReason||"",p.recordedAt,p.paymentType || ""]);
     if (p.voidReason) continue;
     for (const [type,label,identifier] of [
       ["Week",weekKey(p.paidOn),""],["Month",p.paidOn.slice(0,7),""],["Year",p.paidOn.slice(0,4),""],
@@ -206,14 +206,14 @@ function rowsFor(state) {
   const contracts = [[
     "Contract ID","Musician ID","Musician","Email","Band","Venue","Performance date",
     "Starts","Ends","Sets","Minutes per set","Fee DKK","Payment","Special agreements",
-    "Organizer signer","Organizer signed at","Musician signer","Musician signed at","Template"
+    "Organizer signer","Organizer signed at","Musician signer","Musician signed at","Template","Soundcheck","Requests","Payment type"
   ]];
   for (const c of state.contracts || []) {
     const t = c.offer;
     contracts.push([
       c.id,c.musicianId,c.performer.name,c.performer.email,c.performer.band,t.organizer.name,t.performanceDate,
       t.start,t.end,t.sets,t.minutesPerSet,t.fee/100,t.payOn || "First working day after performance",t.specialTerms,
-      t.organizerSigner,t.organizerSignedAt,c.performerSigner,c.performerSignedAt,t.template.url
+      t.organizerSigner,t.organizerSignedAt,c.performerSigner,c.performerSignedAt,t.template.url,t.soundcheck || "",t.requests || "",t.paymentType || ""
     ]);
   }
   return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary,Contracts:contracts};
@@ -223,7 +223,7 @@ const TIME_FORMAT = {type:"TIME",pattern:"hh:mm"};
 const DATE_TIME_FORMAT = {type:"DATE_TIME",pattern:"dd-mm-yyyy hh:mm"};
 const DKK_FORMAT = {type:"CURRENCY",pattern:'#,##0.00 "kr."'};
 const COLUMN_FORMATS = {
-  Musicians: {"Registered":DATE_TIME_FORMAT,"Updated":DATE_TIME_FORMAT},
+  Musicians: {"Registered":DATE_TIME_FORMAT,"Updated":DATE_TIME_FORMAT,"Starts":TIME_FORMAT,"Ends":TIME_FORMAT},
   Payments: {"Paid on":DATE_FORMAT,"Performance date":DATE_FORMAT,"Amount DKK":DKK_FORMAT,
     "Net DKK":DKK_FORMAT,"Recorded at":DATE_TIME_FORMAT},
   Contracts: {"Performance date":DATE_FORMAT,"Starts":TIME_FORMAT,"Ends":TIME_FORMAT,

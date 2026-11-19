@@ -195,6 +195,8 @@ export async function POST(req: Request) {
             offer: {
               ...terms,
               performerEmail: artist.email.toLowerCase(),
+              artistPerformance: true,
+              paymentType: payment.paymentType,
               performanceDate: payment.performedOn,
               payOn: payment.paidOn,
               fee: payment.amount,

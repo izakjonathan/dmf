@@ -324,7 +324,10 @@ export default function Dashboard() {
     }
     setBusy(true);
     setError("");
-    if (registrationLink && registrationLink.expiresAt > new Date().toISOString()) {
+    if (
+      registrationLink &&
+      registrationLink.expiresAt > new Date().toISOString()
+    ) {
       const url = location.origin + registrationLink.path;
       try {
         await navigator.clipboard.writeText(url);
@@ -714,8 +717,8 @@ export default function Dashboard() {
                   {emailCheck.deployment && (
                     <>
                       {" "}
-                      Deployment ID ends in{" "}
-                      <code>{emailCheck.deployment}</code>.
+                      Deployment ID ends in <code>{emailCheck.deployment}</code>
+                      .
                     </>
                   )}
                 </p>
@@ -1063,33 +1066,14 @@ function PaymentForm({
         <form
           onSubmit={(event) => {
             const data = fields(event);
-            const {
-              start,
-              end,
-              getIn,
-              soundcheck,
-              sets,
-              minutesPerSet,
-              returnBy,
-              specialTerms,
-              organizerSigner,
-              accepted,
-              ...payment
-            } = data;
+            const { returnBy, organizerSigner, accepted, ...payment } = data;
             const values = {
               ...payment,
               id,
               amount: amountInOre,
               contract: withContract
                 ? {
-                    start,
-                    end,
-                    getIn,
-                    soundcheck,
-                    sets,
-                    minutesPerSet,
                     returnBy,
-                    specialTerms,
                     organizerSigner,
                     accepted,
                   }
@@ -1149,6 +1133,13 @@ function PaymentForm({
                 value={amount}
                 onChange={(event) => setAmount(event.target.value)}
               />
+            </Field>
+            <Field label="Payment type">
+              <select name="paymentType" required defaultValue="Bank transfer">
+                <option>Cash</option>
+                <option>Bank transfer</option>
+                <option>Mobilepay</option>
+              </select>
             </Field>
             <Field label="Date paid">
               <input

@@ -4,6 +4,7 @@ import {
   dmfTemplate,
   money,
   today,
+  type ArtistPerformance,
   type ContractOffer,
   type SignedContract,
 } from "@/lib/model";
@@ -29,24 +30,68 @@ export function PaymentContractFields() {
       </p>
       <div className="grid">
         <label>
-          Starts at
-          <input name="start" type="time" required />
+          Signing deadline
+          <input name="returnBy" type="date" min={today()} required />
+        </label>
+      </div>
+      <label>
+        Organizer signature · type your full name
+        <input name="organizerSigner" required minLength={2} maxLength={300} />
+      </label>
+      <label className="check">
+        <input name="accepted" type="checkbox" required /> I agree to the DMF
+        terms and sign for the organizer.
+      </label>
+    </fieldset>
+  );
+}
+
+export function ArtistPerformanceFields({
+  value,
+}: {
+  value?: Partial<ArtistPerformance>;
+}) {
+  return (
+    <fieldset className="form-fieldset">
+      <legend>Performance details</legend>
+      <div className="grid">
+        <label>
+          Start time
+          <input
+            name="start"
+            type="time"
+            required
+            defaultValue={value?.start}
+          />
         </label>
         <label>
-          Ends at
-          <input name="end" type="time" required />
+          End time
+          <input name="end" type="time" required defaultValue={value?.end} />
         </label>
         <label>
-          Get-in (optional)
-          <input name="getIn" type="time" />
-        </label>
-        <label>
-          Soundcheck (optional)
-          <input name="soundcheck" type="time" />
+          Soundcheck
+          <select
+            name="soundcheck"
+            required
+            defaultValue={value?.soundcheck || ""}
+          >
+            <option value="" disabled>
+              Select yes or no
+            </option>
+            <option>Yes</option>
+            <option>No</option>
+          </select>
         </label>
         <label>
           Number of sets
-          <input name="sets" type="number" min={1} max={30} required />
+          <input
+            name="sets"
+            type="number"
+            min={1}
+            max={30}
+            required
+            defaultValue={value?.sets}
+          />
         </label>
         <label>
           Minutes per set
@@ -56,24 +101,18 @@ export function PaymentContractFields() {
             min={1}
             max={720}
             required
+            defaultValue={value?.minutesPerSet}
           />
-        </label>
-        <label>
-          Signing deadline
-          <input name="returnBy" type="date" min={today()} required />
         </label>
       </div>
       <label>
-        Special agreements (optional)
-        <textarea name="specialTerms" rows={2} maxLength={2000} />
-      </label>
-      <label>
-        Organizer signature · type your full name
-        <input name="organizerSigner" required minLength={2} maxLength={300} />
-      </label>
-      <label className="check">
-        <input name="accepted" type="checkbox" required /> I agree to the DMF
-        terms and sign for the organizer.
+        Requests (optional)
+        <textarea
+          name="requests"
+          rows={2}
+          maxLength={2000}
+          defaultValue={value?.requests}
+        />
       </label>
     </fieldset>
   );
@@ -118,10 +157,25 @@ export function ContractTerms({
         </dd>
         <dt>Performance</dt>
         <dd>
-          {offer.performanceDate} · {offer.start}–{offer.end}
-          {offer.end < offer.start && " (ends next day)"}
+          {offer.performanceDate}
+          {offer.start && offer.end && (
+            <>
+              {" "}
+              · {offer.start}–{offer.end}
+            </>
+          )}
+          {offer.start &&
+            offer.end &&
+            offer.end < offer.start &&
+            " (ends next day)"}
           <br />
-          {offer.sets} × {offer.minutesPerSet} min
+          {offer.sets && offer.minutesPerSet ? (
+            <>
+              {offer.sets} × {offer.minutesPerSet} min
+            </>
+          ) : (
+            "Artist supplies performance details when signing."
+          )}
         </dd>
         {offer.getIn && (
           <>
@@ -141,9 +195,22 @@ export function ContractTerms({
         <dd>
           {recordedPayment
             ? offer.payOn
-            : "Bank transfer " +
+            : (offer.paymentType || "Bank transfer") +
+              " " +
               (offer.payOn || "on the first working day after the performance")}
         </dd>
+        {offer.requests && (
+          <>
+            <dt>Requests</dt>
+            <dd>{offer.requests}</dd>
+          </>
+        )}
+        {recordedPayment && offer.paymentType && (
+          <>
+            <dt>Payment type</dt>
+            <dd>{offer.paymentType}</dd>
+          </>
+        )}
         <dt>Sign by</dt>
         <dd>{offer.returnBy}</dd>
         {offer.specialTerms && (

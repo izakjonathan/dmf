@@ -8,6 +8,7 @@ import {
   writeState,
 } from "@/lib/server";
 import {
+  artistPerformanceSchema,
   musicianSchema,
   performerSignatureSchema,
   today,
@@ -47,6 +48,10 @@ export async function GET(_req: Request, context: Context) {
       offer: offer ? publicOffer : null,
       signingOnly: Boolean(invite.paymentId),
       performerName: invite.performer?.name,
+      performance: invite.offer?.artistPerformance
+        ? state.musicians.find((item) => item.id === invite.musicianId)
+            ?.performance
+        : undefined,
       profile: profile
         ? {
             name: profile.name,
@@ -56,6 +61,7 @@ export async function GET(_req: Request, context: Context) {
             phone: profile.phone,
             payee: profile.payee,
             cvr: profile.cvr,
+            performance: profile.performance,
           }
         : null,
     });
@@ -70,6 +76,10 @@ export async function POST(req: Request, context: Context) {
     const invite = findInvite(state, (await context.params).token);
     const offer = registrationOffer(invite);
     const body = await req.json();
+    const performance =
+      !offer || offer.artistPerformance
+        ? artistPerformanceSchema.parse(body.performance)
+        : undefined;
     if (invite.paymentId) {
       if (!offer || !invite.performer || !invite.musicianId)
         throw new RequestError(
@@ -90,13 +100,14 @@ export async function POST(req: Request, context: Context) {
         id: invite.id,
         paymentId: invite.paymentId,
         musicianId: invite.musicianId,
-        offer,
+        offer: { ...offer, ...performance },
         performer: invite.performer,
         performerSigner: signature.name,
         performerSignedAt: new Date().toISOString(),
       };
       state.contracts ??= [];
       state.contracts.push(contract);
+      if (performance) invite.offer = contract.offer;
       invite.signedAt = contract.performerSignedAt;
       await writeState(state);
       return json({ ok: true, contract });
@@ -130,6 +141,7 @@ export async function POST(req: Request, context: Context) {
     const existing = state.musicians[index];
     const profile = {
       ...input,
+      performance,
       cpr: (state.venue.collectCpr && input.cpr) || existing?.cpr || "",
       id: existing?.id || crypto.randomUUID(),
       createdAt: existing?.createdAt || at,
@@ -144,7 +156,7 @@ export async function POST(req: Request, context: Context) {
       contract = {
         id: invite.id,
         musicianId: profile.id,
-        offer,
+        offer: { ...offer, ...performance },
         performer: { name, email, address, phone, band, cvr, payee },
         performerSigner: signature.name,
         performerSignedAt: at,
