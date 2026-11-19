@@ -1227,3 +1227,54 @@ input[type="time"]::-webkit-date-and-time-value {
     padding: 10px;
   }
 }
+
+/* Keep identity and status on separate rows in narrow booking cards. */
+.booking-member-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+}
+.booking-member-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.booking-member-row:last-child {
+  border-bottom: 0;
+}
+.booking-member-identity,
+.booking-member-status {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.booking-member-identity strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.booking-member-identity small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.booking-member-status {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.booking-member-status .link {
+  display: block;
+  padding-inline: 0;
+  margin-top: 4px;
+  text-align: left;
+}
+@media (min-width: 700px) {
+  .booking-member-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 20px;
+  }
+}

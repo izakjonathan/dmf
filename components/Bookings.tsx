@@ -338,14 +338,17 @@ export default function Bookings({
                               {money(booking.fee * booking.expectedMembers)}{" "}
                               total
                             </p>
-                            <ul className="payment-list">
+                            <ul className="booking-member-list">
                               {booking.members.map((member) => (
-                                <li className="payment-row" key={member.id}>
-                                  <span>
+                                <li
+                                  className="booking-member-row"
+                                  key={member.id}
+                                >
+                                  <span className="booking-member-identity">
                                     <strong>{member.name}</strong>
                                     <small>{member.email}</small>
                                   </span>
-                                  <span>
+                                  <span className="booking-member-status">
                                     {member.status} · {member.paymentType}
                                     {member.contractId &&
                                       member.status ===
