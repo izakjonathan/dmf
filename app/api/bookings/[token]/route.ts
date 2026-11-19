@@ -169,14 +169,16 @@ export async function POST(req: Request, context: Context) {
           "Check your email and open the private verification link. It expires in 30 minutes.",
       });
     }
-    const proof = verify(state, booking, String(body.verification || ""));
+    const proof = body.verification
+      ? verify(state, booking, String(body.verification))
+      : null;
     if (booking.approvedVersion === booking.version || booking.confirmedAt)
       throw new RequestError(
         "The lineup and agreement are approved. Contact the venue to request a change.",
         409,
       );
     if (body.action === "act") {
-      if (proof.email !== booking.contactEmail)
+      if (proof && proof.email !== booking.contactEmail)
         throw new RequestError(
           "Only the booking contact can change the act details.",
           403,
@@ -210,12 +212,19 @@ export async function POST(req: Request, context: Context) {
         .parse(input.preferredPaymentType);
       if (paymentType === "Mobilepay" && !input.phone.trim())
         throw new RequestError("Enter your Mobilepay phone number.");
-      if (input.email !== proof.email)
+      if (proof && input.email !== proof.email)
         throw new RequestError("Use your verified email address.", 403);
-      const existing = state.musicians.find(
-        (m) => m.email.toLowerCase() === proof.email,
-      );
-      const member = booking.members.find((m) => m.email === proof.email);
+      // A shared booking link may create a profile, but never retrieve or
+      // overwrite a previously saved musician's private/payment information.
+      const existing = proof
+        ? state.musicians.find((m) => m.email.toLowerCase() === proof.email)
+        : undefined;
+      const member = booking.members.find((m) => m.email === input.email);
+      if (member && !proof)
+        throw new RequestError(
+          "Details have already been submitted for this email. Contact the venue for changes.",
+          409,
+        );
       if (!member && booking.members.length >= booking.expectedMembers)
         throw new RequestError(
           "The lineup is full. Ask the band contact to update the member count.",

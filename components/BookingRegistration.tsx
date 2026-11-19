@@ -82,7 +82,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                 cvr: "",
                 band: details!.booking.act,
                 ...fields,
-                email: details!.email,
+                email: details!.email || fields.email,
               },
             }
           : { email: fields.email };
@@ -153,30 +153,7 @@ export default function BookingRegistration({ token }: { token: string }) {
               musicians registered. Every musician must complete their own
               details before playing.
             </p>
-            {!details.email ? (
-              <form
-                className="panel auth"
-                onSubmit={(e) => void submit(e, "verify")}
-              >
-                <h2>Enter your email</h2>
-                <p className="fine">
-                  We will email a private link to enter your details or confirm
-                  information you provided before.
-                </p>
-                <label>
-                  Email
-                  <input
-                    name="email"
-                    type="email"
-                    autoComplete="email"
-                    required
-                  />
-                </label>
-                <button disabled={busy}>
-                  {busy ? "Sending…" : "Send my private link"}
-                </button>
-              </form>
-            ) : details.booking.approved ? (
+            {details.booking.approved ? (
               <div className="panel">
                 <h2>Agreement approved</h2>
                 <p>
@@ -186,7 +163,7 @@ export default function BookingRegistration({ token }: { token: string }) {
               </div>
             ) : (
               <>
-                {details.isContact && (
+                {(!details.email || details.isContact) && (
                   <form
                     className="panel"
                     onSubmit={(e) => void submit(e, "act")}
@@ -228,119 +205,140 @@ export default function BookingRegistration({ token }: { token: string }) {
                     <button disabled={busy}>Save act details</button>
                   </form>
                 )}
-                <form
-                  className="panel"
-                  onSubmit={(e) => void submit(e, "register")}
-                >
-                  <h2>
-                    {details.registered
-                      ? "Confirm or update your details"
-                      : "Your musician details"}
-                  </h2>
-                  <div className="grid">
-                    <label>
-                      Legal name
-                      <input
-                        name="name"
-                        autoComplete="name"
-                        defaultValue={details.profile?.name}
-                        required
-                        minLength={2}
-                        maxLength={300}
-                      />
-                    </label>
-                    <label>
-                      Verified email
-                      <input value={details.email} type="email" readOnly />
-                    </label>
-                    <label>
-                      Phone / Mobilepay number
-                      <input
-                        name="phone"
-                        type="tel"
-                        autoComplete="tel"
-                        defaultValue={details.profile?.phone}
-                        maxLength={300}
-                        required={paymentType === "Mobilepay"}
-                      />
-                    </label>
-                    <label>
-                      Full address
-                      <input
-                        name="address"
-                        autoComplete="street-address"
-                        defaultValue={details.profile?.address}
-                        required
-                        minLength={5}
-                        maxLength={300}
-                      />
-                    </label>
+                {details.registered && !verification ? (
+                  <div className="panel">
+                    <h2>Thank you</h2>
+                    <p>
+                      Your details are saved. Your contract will be sent to your
+                      email after the venue approves the booking.
+                    </p>
+                    <p className="fine">
+                      Every other musician can use this same booking link to
+                      register their own details.
+                    </p>
                   </div>
-                  <label>
-                    Payment recipient
-                    <select
-                      name="payee"
-                      value={payee}
-                      onChange={(e) => setPayee(e.target.value)}
-                    >
-                      <option>Individual</option>
-                      <option>Business</option>
-                    </select>
-                  </label>
-                  {payee === "Business" && (
+                ) : (
+                  <form
+                    className="panel"
+                    onSubmit={(e) => void submit(e, "register")}
+                  >
+                    <h2>
+                      {details.registered
+                        ? "Confirm or update your details"
+                        : "Your musician details"}
+                    </h2>
+                    <div className="grid">
+                      <label>
+                        Legal name
+                        <input
+                          name="name"
+                          autoComplete="name"
+                          defaultValue={details.profile?.name}
+                          required
+                          minLength={2}
+                          maxLength={300}
+                        />
+                      </label>
+                      <label>
+                        Email
+                        <input
+                          name="email"
+                          defaultValue={details.email}
+                          type="email"
+                          autoComplete="email"
+                          readOnly={Boolean(details.email)}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Phone / Mobilepay number
+                        <input
+                          name="phone"
+                          type="tel"
+                          autoComplete="tel"
+                          defaultValue={details.profile?.phone}
+                          maxLength={300}
+                          required={paymentType === "Mobilepay"}
+                        />
+                      </label>
+                      <label>
+                        Full address
+                        <input
+                          name="address"
+                          autoComplete="street-address"
+                          defaultValue={details.profile?.address}
+                          required
+                          minLength={5}
+                          maxLength={300}
+                        />
+                      </label>
+                    </div>
                     <label>
-                      CVR
-                      <input
-                        name="cvr"
-                        pattern="[0-9]{8}"
-                        inputMode="numeric"
-                        defaultValue={details.profile?.cvr}
-                        required
-                      />
+                      Payment recipient
+                      <select
+                        name="payee"
+                        value={payee}
+                        onChange={(e) => setPayee(e.target.value)}
+                      >
+                        <option>Individual</option>
+                        <option>Business</option>
+                      </select>
                     </label>
-                  )}
-                  {details.venue.collectCpr && (
-                    <label>
-                      CPR (optional)
-                      <input
-                        name="cpr"
-                        pattern="[0-9]{6}-?[0-9]{4}"
-                        autoComplete="off"
-                      />
-                    </label>
-                  )}
-                  <label>
-                    Preferred payment method
-                    <select
-                      name="preferredPaymentType"
-                      value={paymentType}
-                      onChange={(e) => setPaymentType(e.target.value)}
-                      required
-                    >
-                      <option value="" disabled>
-                        Select payment method
-                      </option>
-                      <option>Cash</option>
-                      <option>Bank transfer</option>
-                      <option>Mobilepay</option>
-                    </select>
-                  </label>
-                  <BankFields profile={details.profile || undefined} />
-                  <p className="fine">
-                    {paymentType && <>Payment method · {paymentType}. </>}{" "}
-                    {details.booking.fee > 0 && (
-                      <>Fee per musician · {money(details.booking.fee)}.</>
+                    {payee === "Business" && (
+                      <label>
+                        CVR
+                        <input
+                          name="cvr"
+                          pattern="[0-9]{8}"
+                          inputMode="numeric"
+                          defaultValue={details.profile?.cvr}
+                          required
+                        />
+                      </label>
                     )}
-                  </p>
-                  <p className="fine">
-                    {details.venue.legalName} uses your details for contracts,
-                    payments and accounting in its restricted Google Sheet.
-                    Contact {details.venue.email} for corrections.
-                  </p>
-                  <button disabled={busy}>
-                    {busy ? "Saving…" : "Save my details"}
-                  </button>
-                </form>
+                    {details.venue.collectCpr && (
+                      <label>
+                        CPR (optional)
+                        <input
+                          name="cpr"
+                          pattern="[0-9]{6}-?[0-9]{4}"
+                          autoComplete="off"
+                        />
+                      </label>
+                    )}
+                    <label>
+                      Preferred payment method
+                      <select
+                        name="preferredPaymentType"
+                        value={paymentType}
+                        onChange={(e) => setPaymentType(e.target.value)}
+                        required
+                      >
+                        <option value="" disabled>
+                          Select payment method
+                        </option>
+                        <option>Cash</option>
+                        <option>Bank transfer</option>
+                        <option>Mobilepay</option>
+                      </select>
+                    </label>
+                    <BankFields profile={details.profile || undefined} />
+                    <p className="fine">
+                      {paymentType && <>Payment method · {paymentType}. </>}{" "}
+                      {details.booking.fee > 0 && (
+                        <>Fee per musician · {money(details.booking.fee)}.</>
+                      )}
+                    </p>
+                    <p className="fine">
+                      {details.venue.legalName} uses your details for contracts,
+                      payments and accounting in its restricted Google Sheet.
+                      Contact {details.venue.email} for corrections.
+                    </p>
+                    <button disabled={busy}>
+                      {busy ? "Saving…" : "Save my details"}
+                    </button>
+                  </form>
+                )}
               </>
             )}
           </>

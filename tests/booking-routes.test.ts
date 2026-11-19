@@ -132,6 +132,69 @@ test("booking API completes registration, signatures, attendance and payment wit
   ).json();
   assert.equal(publicResult.profile, undefined);
   assert.equal(publicResult.email, undefined);
+  // The shared invitation must accept details immediately, without an email round trip.
+  const beforeDirectRegistration = structuredClone(state);
+  const direct = await artist.POST(
+    post({
+      action: "register",
+      profile: {
+        ...contact,
+        account: "1234567890",
+        preferredPaymentType: "Bank transfer",
+      },
+    }),
+    context,
+  );
+  assert.equal(direct.status, 200);
+  assert.equal(state.bookings![0].members.length, 1);
+  assert.equal(
+    state.bookingMail?.filter((m) => m.kind === "verification").length || 0,
+    0,
+  );
+  assert.equal(
+    state.musicians.find((m) => m.id === contact.id)!.account,
+    contact.account,
+  );
+  assert.notEqual(state.bookings![0].members[0].musicianId, contact.id);
+  assert.equal((await direct.json()).profile, undefined);
+  assert.equal(
+    (
+      await artist.POST(
+        post({
+          action: "register",
+          profile: { ...contact, preferredPaymentType: "Cash" },
+        }),
+        context,
+      )
+    ).status,
+    409,
+  );
+  const shared = await (
+    await artist.GET(
+      new Request("https://example.com/api/bookings/" + bookingToken),
+      context,
+    )
+  ).json();
+  assert.equal(shared.profile, undefined);
+  assert.equal(shared.email, undefined);
+  const directAct = await artist.POST(
+    post({
+      action: "act",
+      performance: {
+        start: "21:00",
+        end: "00:00",
+        sets: 2,
+        minutesPerSet: 45,
+        soundcheck: "Yes",
+        requests: "Microphone",
+      },
+      expectedMembers: 2,
+      fee: 315000,
+    }),
+    context,
+  );
+  assert.equal(directAct.status, 200);
+  state = beforeDirectRegistration;
   const proofs = new Map<string, string>();
   for (const person of [contact, musician]) {
     const response = await artist.POST(
