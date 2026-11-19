@@ -2,6 +2,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { bookingOverview, type Booking } from "@/lib/bookings";
 import { dmfTemplate, money, today } from "@/lib/model";
+function bookingDate(date: string) {
+  const [year, month, day] = date.split("-");
+  return `${day}/${month}/${year}`;
+}
 type View = ReturnType<typeof bookingOverview>[number] & { link: string };
 type Account = {
   memberId: string;
@@ -40,6 +44,8 @@ export default function Bookings({
   const [loaded, setLoaded] = useState(false);
   const [selectedDate, setSelectedDate] = useState("");
   const [past, setPast] = useState(false);
+  const [management, setManagement] = useState(false);
+  const [employee, setEmployee] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -116,7 +122,13 @@ export default function Bookings({
     ),
   ).sort();
   if (past) days.reverse();
-  const dated = bookings.filter((b) => b.date === selectedDate);
+  const dated = bookings
+    .filter((b) => b.date === selectedDate)
+    .sort((a, b) =>
+      (a.performance?.start || "99:99").localeCompare(
+        b.performance?.start || "99:99",
+      ),
+    );
   const obligations = bookings.flatMap((booking) =>
     booking.members.map((member) => ({
       booking,
@@ -160,13 +172,22 @@ export default function Bookings({
         <>
           <div className="row booking-toolbar">
             <button
-              className="secondary"
-              disabled={busy}
-              onClick={() => void act("sync")}
+              className="link"
+              onClick={() => setManagement(!management)}
+              aria-pressed={management}
             >
-              {busy ? "Updating…" : "Update bookings"}
+              {management ? "Night view" : "Manage bookings"}
             </button>
-            {sheet && (
+            {management && (
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => void act("sync")}
+              >
+                {busy ? "Updating…" : "Update bookings"}
+              </button>
+            )}
+            {management && sheet && (
               <a className="link" href={sheet} target="_blank" rel="noreferrer">
                 Open booking sheet
               </a>
@@ -202,22 +223,18 @@ export default function Bookings({
                       onClick={() => setSelectedDate(date)}
                     >
                       <span>
-                        <strong>
-                          {new Date(date + "T12:00:00").toLocaleDateString(
-                            "en-DK",
-                            {
-                              weekday: "short",
-                              day: "numeric",
-                              month: "short",
-                              year: "numeric",
-                            },
-                          )}
-                        </strong>
-                        <small>{acts.map((b) => b.act).join(" · ")}</small>
+                        <strong>{bookingDate(date)}</strong>
+                        <span className="booking-day-acts">
+                          {acts.map((b) => (
+                            <span key={b.id}>
+                              {b.act}
+                              {b.cancelled && " · Cancelled"}
+                            </span>
+                          ))}
+                        </span>
                       </span>
-                      <span>
-                        {acts.filter((b) => b.confirmedAt).length}/{acts.length}{" "}
-                        confirmed
+                      <span className="booking-day-arrow" aria-hidden="true">
+                        →
                       </span>
                     </button>
                   </li>
@@ -229,261 +246,417 @@ export default function Bookings({
               <button className="link" onClick={() => setSelectedDate("")}>
                 All dates
               </button>
-              <h2 className="booking-date">{selectedDate}</h2>
-              {dated.some((b) => !b.cancelled && !b.confirmedAt) &&
-                selectedDate <= today() && (
-                  <form
-                    className="panel"
-                    onSubmit={(e) => {
-                      const fields = values(e);
-                      void act("attendanceDate", undefined, {
-                        date: selectedDate,
-                        by: fields.by,
-                      });
-                    }}
-                  >
-                    <h2>Confirm the night</h2>
-                    <p className="fine">
-                      Confirm that every listed act and musician played as
-                      agreed. Use an act’s exceptions form if anything changed.
-                    </p>
-                    <label>
-                      Your full name
-                      <input name="by" required minLength={2} />
-                    </label>
-                    <label className="check">
-                      <input type="checkbox" required />
-                      All acts performed as agreed
-                    </label>
-                    <button disabled={busy}>Confirm this date</button>
-                  </form>
-                )}
-              {dated.map((booking) => (
-                <article className="panel booking-act" key={booking.id}>
-                  <div className="section-title">
-                    <h2>{booking.act}</h2>
-                    <button
-                      className="link"
-                      disabled={busy}
-                      onClick={() => void act("link", booking.id)}
-                    >
-                      Copy booking link
-                    </button>
-                  </div>
-                  <p>
-                    {booking.members.length}/{booking.expectedMembers} musicians
-                    registered ·{" "}
-                    {booking.cancelled
-                      ? "Cancelled"
-                      : booking.approvedVersion === booking.version
-                        ? "Company signed"
-                        : "Awaiting approval"}
-                  </p>
-                  {booking.sourceError && (
-                    <p className="error">{booking.sourceError}</p>
-                  )}
-                  <Schedule booking={booking} />
-                  <p>
-                    {money(booking.fee)} per musician ·{" "}
-                    {money(booking.fee * booking.expectedMembers)} total
-                  </p>
-                  <ul className="payment-list">
-                    {booking.members.map((member) => (
-                      <li className="payment-row" key={member.id}>
-                        <span>
-                          <strong>{member.name}</strong>
-                          <small>{member.email}</small>
-                        </span>
-                        <span>
-                          {member.status} · {member.paymentType}
-                          {member.contractId &&
-                            member.status === "Artist signature needed" && (
-                              <button
-                                className="link"
-                                disabled={busy}
-                                onClick={() =>
-                                  void act("signingLink", booking.id, {
-                                    memberId: member.id,
-                                  })
-                                }
-                              >
-                                Copy signing link
-                              </button>
-                            )}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  {!booking.cancelled &&
-                    booking.approvedVersion !== booking.version &&
-                    !booking.confirmedAt && (
+              <h2 className="booking-date">{bookingDate(selectedDate)}</h2>
+              {management ? (
+                <>
+                  {dated.some((b) => !b.cancelled && !b.confirmedAt) &&
+                    selectedDate <= today() && (
                       <form
-                        className="booking-form"
+                        className="panel"
                         onSubmit={(e) => {
                           const fields = values(e);
-                          void act("approve", booking.id, {
-                            signer: fields.signer,
-                            accepted: true,
-                            fee: Math.round(Number(fields.fee) * 100),
-                            dueOn: fields.dueOn,
+                          void act("attendanceDate", undefined, {
+                            date: selectedDate,
+                            by: fields.by,
                           });
                         }}
                       >
-                        <h3>Company approval</h3>
+                        <h2>Confirm the night</h2>
                         <p className="fine">
-                          <a
-                            href={dmfTemplate.url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Read the DMF standard contract
-                          </a>
+                          Confirm that every listed act and musician played as
+                          agreed. Use an act’s exceptions form if anything
+                          changed.
                         </p>
-                        <div className="grid">
-                          <label>
-                            Fee per musician (DKK)
-                            <input
-                              key={booking.fee}
-                              name="fee"
-                              type="number"
-                              min="0.01"
-                              step="0.01"
-                              required
-                              defaultValue={booking.fee / 100 || ""}
-                            />
-                          </label>
-                          <label>
-                            Payment due
-                            <input
-                              name="dueOn"
-                              type="date"
-                              required
-                              defaultValue={booking.dueOn}
-                            />
-                          </label>
-                        </div>
                         <label>
-                          Company signer’s full name
-                          <input
-                            name="signer"
-                            required
-                            minLength={2}
-                            maxLength={300}
-                          />
+                          Your full name
+                          <input name="by" required minLength={2} />
                         </label>
                         <label className="check">
-                          <input type="checkbox" required />I approve the
-                          lineup, schedule, fees and DMF terms and sign for the
-                          company.
+                          <input type="checkbox" required />
+                          All acts performed as agreed
                         </label>
-                        <button
-                          disabled={
-                            busy ||
-                            !booking.performance ||
-                            booking.members.length !== booking.expectedMembers
-                          }
-                        >
-                          Approve, sign and send contracts
-                        </button>
+                        <button disabled={busy}>Confirm this date</button>
                       </form>
                     )}
-                  {booking.approvedBy && (
-                    <p className="fine">
-                      Company signed by {booking.approvedBy} ·{" "}
-                      {booking.approvedAt?.slice(0, 10)}
-                    </p>
-                  )}
-                  {booking.confirmedAt && (
-                    <p className="banner">
-                      Performance confirmed by {booking.confirmedBy}.{" "}
-                      {booking.attendanceNote}
-                    </p>
-                  )}
-                  {!booking.cancelled &&
-                    booking.approvedVersion === booking.version &&
-                    booking.date <= today() &&
-                    !booking.members.some((m) => m.paymentId) && (
-                      <details className="booking-form">
-                        <summary>
-                          {booking.confirmedAt
-                            ? "Correct performance confirmation"
-                            : "Record performance exceptions"}
-                        </summary>
-                        <form
-                          onSubmit={(e) => {
-                            const fields = values(e);
-                            void act("attendance", booking.id, {
-                              by: fields.by,
-                              note: fields.note,
-                              members: booking.members.map((m) => ({
-                                id: m.id,
-                                status: fields[m.id],
-                              })),
-                            });
-                          }}
+                  {dated.map((booking) => (
+                    <article className="panel booking-act" key={booking.id}>
+                      <div className="section-title">
+                        <h2>{booking.act}</h2>
+                        <button
+                          className="link"
+                          disabled={busy}
+                          onClick={() => void act("link", booking.id)}
                         >
-                          {booking.members.map((m) => (
-                            <label key={m.id}>
-                              {m.name}
-                              <select
-                                name={m.id}
-                                defaultValue={m.attendance || "played"}
+                          Copy booking link
+                        </button>
+                      </div>
+                      <p>
+                        {booking.members.length}/{booking.expectedMembers}{" "}
+                        musicians registered ·{" "}
+                        {booking.cancelled
+                          ? "Cancelled"
+                          : booking.approvedVersion === booking.version
+                            ? "Company signed"
+                            : "Awaiting approval"}
+                      </p>
+                      {booking.sourceError && (
+                        <p className="error">{booking.sourceError}</p>
+                      )}
+                      <Schedule booking={booking} />
+                      <p>
+                        {money(booking.fee)} per musician ·{" "}
+                        {money(booking.fee * booking.expectedMembers)} total
+                      </p>
+                      <ul className="payment-list">
+                        {booking.members.map((member) => (
+                          <li className="payment-row" key={member.id}>
+                            <span>
+                              <strong>{member.name}</strong>
+                              <small>{member.email}</small>
+                            </span>
+                            <span>
+                              {member.status} · {member.paymentType}
+                              {member.contractId &&
+                                member.status === "Artist signature needed" && (
+                                  <button
+                                    className="link"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      void act("signingLink", booking.id, {
+                                        memberId: member.id,
+                                      })
+                                    }
+                                  >
+                                    Copy signing link
+                                  </button>
+                                )}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      {!booking.cancelled &&
+                        booking.approvedVersion !== booking.version &&
+                        !booking.confirmedAt && (
+                          <form
+                            className="booking-form"
+                            onSubmit={(e) => {
+                              const fields = values(e);
+                              void act("approve", booking.id, {
+                                signer: fields.signer,
+                                accepted: true,
+                                fee: Math.round(Number(fields.fee) * 100),
+                                dueOn: fields.dueOn,
+                              });
+                            }}
+                          >
+                            <h3>Company approval</h3>
+                            <p className="fine">
+                              <a
+                                href={dmfTemplate.url}
+                                target="_blank"
+                                rel="noreferrer"
                               >
-                                <option value="played">Played as agreed</option>
-                                <option value="absent">Absent</option>
-                                <option value="issue">Performance issue</option>
-                              </select>
+                                Read the DMF standard contract
+                              </a>
+                            </p>
+                            <div className="grid">
+                              <label>
+                                Fee per musician (DKK)
+                                <input
+                                  key={booking.fee}
+                                  name="fee"
+                                  type="number"
+                                  min="0.01"
+                                  step="0.01"
+                                  required
+                                  defaultValue={booking.fee / 100 || ""}
+                                />
+                              </label>
+                              <label>
+                                Payment due
+                                <input
+                                  name="dueOn"
+                                  type="date"
+                                  required
+                                  defaultValue={booking.dueOn}
+                                />
+                              </label>
+                            </div>
+                            <label>
+                              Company signer’s full name
+                              <input
+                                name="signer"
+                                required
+                                minLength={2}
+                                maxLength={300}
+                              />
                             </label>
-                          ))}
-                          <label>
-                            What changed?
-                            <textarea
-                              name="note"
-                              rows={2}
-                              defaultValue={booking.attendanceNote}
-                              maxLength={2000}
-                            />
-                          </label>
-                          <label>
-                            Your full name
-                            <input name="by" required minLength={2} />
-                          </label>
-                          <button disabled={busy}>
-                            Save performance confirmation
-                          </button>
-                        </form>
-                      </details>
-                    )}
-                  <details className="booking-form">
-                    <summary>Email status</summary>
-                    {booking.mail.length ? (
-                      booking.mail.map((mail) => (
-                        <div className="invite-row" key={mail.id}>
-                          <span>
-                            {mail.to} · {mail.kind} · {mail.status}
-                            {mail.error && <> · {mail.error}</>}
-                          </span>
-                          {mail.status === "failed" && (
+                            <label className="check">
+                              <input type="checkbox" required />I approve the
+                              lineup, schedule, fees and DMF terms and sign for
+                              the company.
+                            </label>
                             <button
-                              className="secondary"
-                              disabled={busy}
-                              onClick={() =>
-                                void act("retry", booking.id, {
-                                  mailId: mail.id,
-                                })
+                              disabled={
+                                busy ||
+                                !booking.performance ||
+                                booking.members.length !==
+                                  booking.expectedMembers
                               }
                             >
-                              Retry email
+                              Approve, sign and send contracts
                             </button>
-                          )}
-                        </div>
-                      ))
-                    ) : (
-                      <p>No emails queued yet.</p>
+                          </form>
+                        )}
+                      {booking.approvedBy && (
+                        <p className="fine">
+                          Company signed by {booking.approvedBy} ·{" "}
+                          {booking.approvedAt?.slice(0, 10)}
+                        </p>
+                      )}
+                      {booking.confirmedAt && (
+                        <p className="banner">
+                          Performance confirmed by {booking.confirmedBy}.{" "}
+                          {booking.attendanceNote}
+                        </p>
+                      )}
+                      {!booking.cancelled &&
+                        booking.approvedVersion === booking.version &&
+                        booking.date <= today() &&
+                        !booking.members.some((m) => m.paymentId) && (
+                          <details className="booking-form">
+                            <summary>
+                              {booking.confirmedAt
+                                ? "Correct performance confirmation"
+                                : "Record performance exceptions"}
+                            </summary>
+                            <form
+                              onSubmit={(e) => {
+                                const fields = values(e);
+                                void act("attendance", booking.id, {
+                                  by: fields.by,
+                                  note: fields.note,
+                                  members: booking.members.map((m) => ({
+                                    id: m.id,
+                                    status: fields[m.id],
+                                  })),
+                                });
+                              }}
+                            >
+                              {booking.members.map((m) => (
+                                <label key={m.id}>
+                                  {m.name}
+                                  <select
+                                    name={m.id}
+                                    defaultValue={m.attendance || "played"}
+                                  >
+                                    <option value="played">
+                                      Played as agreed
+                                    </option>
+                                    <option value="absent">Absent</option>
+                                    <option value="issue">
+                                      Performance issue
+                                    </option>
+                                  </select>
+                                </label>
+                              ))}
+                              <label>
+                                What changed?
+                                <textarea
+                                  name="note"
+                                  rows={2}
+                                  defaultValue={booking.attendanceNote}
+                                  maxLength={2000}
+                                />
+                              </label>
+                              <label>
+                                Your full name
+                                <input name="by" required minLength={2} />
+                              </label>
+                              <button disabled={busy}>
+                                Save performance confirmation
+                              </button>
+                            </form>
+                          </details>
+                        )}
+                      <details className="booking-form">
+                        <summary>Email status</summary>
+                        {booking.mail.length ? (
+                          booking.mail.map((mail) => (
+                            <div className="invite-row" key={mail.id}>
+                              <span>
+                                {mail.to} · {mail.kind} · {mail.status}
+                                {mail.error && <> · {mail.error}</>}
+                              </span>
+                              {mail.status === "failed" && (
+                                <button
+                                  className="secondary"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void act("retry", booking.id, {
+                                      mailId: mail.id,
+                                    })
+                                  }
+                                >
+                                  Retry email
+                                </button>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <p>No emails queued yet.</p>
+                        )}
+                      </details>
+                    </article>
+                  ))}
+                </>
+              ) : (
+                <div className="night-view">
+                  {selectedDate <= today() &&
+                    dated.some((b) => !b.cancelled && !b.confirmedAt) && (
+                      <label className="night-employee">
+                        Confirmed by
+                        <input
+                          value={employee}
+                          onChange={(e) => setEmployee(e.target.value)}
+                          autoComplete="name"
+                          placeholder="Your full name"
+                          minLength={2}
+                          maxLength={300}
+                        />
+                        <span className="fine">
+                          Enter your name, then check each act after they have
+                          played.
+                        </span>
+                      </label>
                     )}
-                  </details>
-                </article>
-              ))}
+                  {dated.map((booking) => {
+                    const missing = Math.max(
+                      0,
+                      booking.expectedMembers - booking.members.length,
+                    );
+                    const confirmed = Boolean(booking.confirmedAt);
+                    const allPlayed =
+                      confirmed &&
+                      booking.members.every((m) => m.attendance === "played");
+                    const approved =
+                      booking.approvedVersion === booking.version;
+                    const canConfirm =
+                      !busy &&
+                      !confirmed &&
+                      !booking.cancelled &&
+                      !booking.sourceError &&
+                      approved &&
+                      selectedDate <= today() &&
+                      employee.trim().length >= 2 &&
+                      !missing;
+                    return (
+                      <article className="night-act" key={booking.id}>
+                        <div className="night-act-heading">
+                          <h3>{booking.act}</h3>
+                          <span className="night-time">
+                            {booking.performance?.start || "Time pending"}
+                          </span>
+                        </div>
+                        {booking.cancelled ? (
+                          <p className="fine">Cancelled</p>
+                        ) : (
+                          <>
+                            <p className="night-members-label">Members</p>
+                            <ul className="night-members">
+                              {booking.members.map((member) => (
+                                <li key={member.id}>{member.name}</li>
+                              ))}
+                              {!booking.members.length && (
+                                <li className="fine">
+                                  No musicians registered yet
+                                </li>
+                              )}
+                            </ul>
+                            {booking.performance ? (
+                              <p className="night-set-info">
+                                {booking.performance.sets}{" "}
+                                {booking.performance.sets === 1
+                                  ? "set"
+                                  : "sets"}{" "}
+                                of {booking.performance.minutesPerSet} min.
+                                <span className="fine">
+                                  Finishes {booking.performance.end}
+                                  {booking.performance.end <
+                                    booking.performance.start && " (next day)"}
+                                </span>
+                              </p>
+                            ) : (
+                              <p className="fine">Schedule pending</p>
+                            )}
+                            {booking.performance?.requests && (
+                              <p className="fine">
+                                Requests: {booking.performance.requests}
+                              </p>
+                            )}
+                            <p
+                              className={
+                                missing
+                                  ? "night-registration missing"
+                                  : "night-registration"
+                              }
+                            >
+                              {missing
+                                ? `${missing} ${missing === 1 ? "registration" : "registrations"} missing`
+                                : "Registration complete"}
+                            </p>
+                            {booking.sourceError && (
+                              <p className="fine">
+                                Booking details need attention. Contact the
+                                manager.
+                              </p>
+                            )}
+                            <label className="check night-confirm">
+                              <input
+                                type="checkbox"
+                                checked={allPlayed}
+                                disabled={!canConfirm}
+                                onChange={(e) => {
+                                  if (e.target.checked)
+                                    void act("attendance", booking.id, {
+                                      by: employee.trim(),
+                                      note: "",
+                                      members: booking.members.map((m) => ({
+                                        id: m.id,
+                                        status: "played",
+                                      })),
+                                    });
+                                }}
+                              />
+                              Act performed as agreed
+                            </label>
+                            {confirmed ? (
+                              <p className="fine">
+                                {allPlayed
+                                  ? "Confirmed"
+                                  : "Exceptions recorded"}{" "}
+                                by {booking.confirmedBy}
+                                {booking.attendanceNote &&
+                                  ` · ${booking.attendanceNote}`}
+                              </p>
+                            ) : selectedDate > today() ? (
+                              <p className="fine">
+                                Confirm on the performance date.
+                              </p>
+                            ) : (
+                              !approved && (
+                                <p className="fine">
+                                  Company approval needed before confirmation.
+                                </p>
+                              )
+                            )}
+                          </>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </>
           )}
           {loaded && !days.length && bookings.length > 0 && (

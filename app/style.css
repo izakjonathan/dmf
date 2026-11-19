@@ -956,3 +956,83 @@ input[type="time"]::-webkit-date-and-time-value {
     grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 }
+
+/* Bookings: a compact running order for the employee on shift. */
+.booking-day-acts {
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.booking-day-arrow {
+  align-self: start;
+  color: var(--muted);
+}
+.night-employee {
+  max-width: 360px;
+  margin: 0 0 24px;
+}
+.night-employee .fine {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+.night-act {
+  padding: 22px 0;
+  border-top: 1px solid var(--rule);
+}
+.night-act-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.night-act-heading h3 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.2;
+  font-weight: 620;
+  letter-spacing: -0.035em;
+  overflow-wrap: anywhere;
+}
+.night-time {
+  flex-shrink: 0;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+.night-members-label {
+  margin-bottom: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.night-members {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+.night-set-info {
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+.night-set-info span {
+  display: block;
+  margin-top: 3px;
+}
+.night-registration {
+  margin: 14px 0;
+  font-size: 13px;
+}
+.night-registration.missing {
+  color: var(--ink);
+  font-weight: 600;
+}
+.night-confirm {
+  margin-bottom: 6px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 14px;
+}
