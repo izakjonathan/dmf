@@ -1036,3 +1036,18 @@ input[type="time"]::-webkit-date-and-time-value {
   letter-spacing: normal;
   font-size: 14px;
 }
+.night-contract {
+  margin: 16px 0;
+}
+.night-contract > summary {
+  font-weight: 600;
+  color: var(--ink);
+}
+.night-contract > .booking-form {
+  margin-top: 0;
+  padding-top: 4px;
+  border-top: 0;
+}
+.night-contract-status {
+  margin: 16px 0;
+}

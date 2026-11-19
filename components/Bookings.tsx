@@ -337,76 +337,13 @@ export default function Bookings({
                       {!booking.cancelled &&
                         booking.approvedVersion !== booking.version &&
                         !booking.confirmedAt && (
-                          <form
-                            className="booking-form"
-                            onSubmit={(e) => {
-                              const fields = values(e);
-                              void act("approve", booking.id, {
-                                signer: fields.signer,
-                                accepted: true,
-                                fee: Math.round(Number(fields.fee) * 100),
-                                dueOn: fields.dueOn,
-                              });
-                            }}
-                          >
-                            <h3>Company approval</h3>
-                            <p className="fine">
-                              <a
-                                href={dmfTemplate.url}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                Read the DMF standard contract
-                              </a>
-                            </p>
-                            <div className="grid">
-                              <label>
-                                Fee per musician (DKK)
-                                <input
-                                  key={booking.fee}
-                                  name="fee"
-                                  type="number"
-                                  min="0.01"
-                                  step="0.01"
-                                  required
-                                  defaultValue={booking.fee / 100 || ""}
-                                />
-                              </label>
-                              <label>
-                                Payment due
-                                <input
-                                  name="dueOn"
-                                  type="date"
-                                  required
-                                  defaultValue={booking.dueOn}
-                                />
-                              </label>
-                            </div>
-                            <label>
-                              Company signer’s full name
-                              <input
-                                name="signer"
-                                required
-                                minLength={2}
-                                maxLength={300}
-                              />
-                            </label>
-                            <label className="check">
-                              <input type="checkbox" required />I approve the
-                              lineup, schedule, fees and DMF terms and sign for
-                              the company.
-                            </label>
-                            <button
-                              disabled={
-                                busy ||
-                                !booking.performance ||
-                                booking.members.length !==
-                                  booking.expectedMembers
-                              }
-                            >
-                              Approve, sign and send contracts
-                            </button>
-                          </form>
+                          <CompanyApproval
+                            booking={booking}
+                            busy={busy}
+                            onApprove={(data) =>
+                              void act("approve", booking.id, data)
+                            }
+                          />
                         )}
                       {booking.approvedBy && (
                         <p className="fine">
@@ -609,6 +546,42 @@ export default function Bookings({
                               <p className="fine">
                                 Booking details need attention. Contact the
                                 manager.
+                              </p>
+                            )}
+                            {!approved && !confirmed && (
+                              <details className="booking-form night-contract">
+                                <summary>
+                                  Confirm, sign and send contracts
+                                </summary>
+                                <CompanyApproval
+                                  booking={booking}
+                                  busy={busy}
+                                  onApprove={(data) =>
+                                    void act("approve", booking.id, data)
+                                  }
+                                />
+                                {(!booking.performance || missing > 0) && (
+                                  <p className="fine">
+                                    Complete the registrations and schedule
+                                    before signing.
+                                  </p>
+                                )}
+                              </details>
+                            )}
+                            {approved && (
+                              <p className="fine night-contract-status">
+                                Company signed
+                                {booking.approvedBy &&
+                                  ` by ${booking.approvedBy}`}{" "}
+                                ·{" "}
+                                {
+                                  booking.members.filter(
+                                    (m) =>
+                                      m.status !== "Artist signature needed" &&
+                                      m.contractId,
+                                  ).length
+                                }
+                                /{booking.members.length} artist signatures
                               </p>
                             )}
                             <label className="check night-confirm">
@@ -881,5 +854,84 @@ function Schedule({ booking }: { booking: Booking }) {
     <p className="fine">
       Waiting for the band contact to complete the schedule.
     </p>
+  );
+}
+
+function CompanyApproval({
+  booking,
+  busy,
+  onApprove,
+}: {
+  booking: View;
+  busy: boolean;
+  onApprove: (data: {
+    signer: FormDataEntryValue;
+    accepted: boolean;
+    fee: number;
+    dueOn: FormDataEntryValue;
+  }) => void;
+}) {
+  return (
+    <form
+      className="booking-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const fields = Object.fromEntries(new FormData(e.currentTarget));
+        onApprove({
+          signer: fields.signer,
+          accepted: true,
+          fee: Math.round(Number(fields.fee) * 100),
+          dueOn: fields.dueOn,
+        });
+      }}
+    >
+      <h3>Confirm agreement</h3>
+      <p className="fine">
+        <a href={dmfTemplate.url} target="_blank" rel="noreferrer">
+          Read the DMF standard contract
+        </a>
+      </p>
+      <div className="grid">
+        <label>
+          Fee per musician (DKK)
+          <input
+            key={booking.fee}
+            name="fee"
+            type="number"
+            min="0.01"
+            step="0.01"
+            required
+            defaultValue={booking.fee / 100 || ""}
+          />
+        </label>
+        <label>
+          Payment due
+          <input
+            name="dueOn"
+            type="date"
+            required
+            defaultValue={booking.dueOn}
+          />
+        </label>
+      </div>
+      <label>
+        Company signer’s full name
+        <input name="signer" required minLength={2} maxLength={300} />
+      </label>
+      <label className="check">
+        <input type="checkbox" required />I approve the lineup, schedule, fees
+        and DMF terms and sign for the company.
+      </label>
+      <button
+        disabled={
+          busy ||
+          Boolean(booking.sourceError) ||
+          !booking.performance ||
+          booking.members.length !== booking.expectedMembers
+        }
+      >
+        Confirm, sign and send contracts
+      </button>
+    </form>
   );
 }
