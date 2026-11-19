@@ -81,6 +81,8 @@ export async function GET(req: Request, context: Context) {
       email: proof.email,
       isContact: proof.email === booking.contactEmail,
       profile: profile ? safeProfile : null,
+      paymentType: booking.members.find((m) => m.email === proof.email)
+        ?.paymentType,
       registered: booking.members.some((m) => m.email === proof.email),
     });
   } catch (error) {
@@ -203,6 +205,11 @@ export async function POST(req: Request, context: Context) {
       });
     } else if (body.action === "register") {
       const input = musicianSchema.parse(body.profile);
+      const paymentType = z
+        .enum(["Cash", "Bank transfer", "Mobilepay"])
+        .parse(input.preferredPaymentType);
+      if (paymentType === "Mobilepay" && !input.phone.trim())
+        throw new RequestError("Enter your Mobilepay phone number.");
       if (input.email !== proof.email)
         throw new RequestError("Use your verified email address.", 403);
       const existing = state.musicians.find(
@@ -229,13 +236,18 @@ export async function POST(req: Request, context: Context) {
         state.musicians[state.musicians.indexOf(existing)] = profile;
       else state.musicians.push(profile);
       if (member)
-        Object.assign(member, { name: profile.name, musicianId: profile.id });
+        Object.assign(member, {
+          name: profile.name,
+          musicianId: profile.id,
+          paymentType,
+        });
       else
         booking.members.push({
           id: crypto.randomUUID(),
           musicianId: profile.id,
           name: profile.name,
           email: profile.email,
+          paymentType,
         });
     } else throw new RequestError("Unknown booking action.");
     // Any material artist change invalidates a draft version before company approval.

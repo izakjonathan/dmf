@@ -28,6 +28,7 @@ type Details = {
   isContact?: boolean;
   profile?: Musician | null;
   registered?: boolean;
+  paymentType?: string;
 };
 export default function BookingRegistration({ token }: { token: string }) {
   const [details, setDetails] = useState<Details>();
@@ -36,6 +37,7 @@ export default function BookingRegistration({ token }: { token: string }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [payee, setPayee] = useState("Individual");
+  const [paymentType, setPaymentType] = useState("");
   const endpoint = "/api/bookings/" + encodeURIComponent(token);
   useEffect(() => {
     let active = true;
@@ -51,6 +53,9 @@ export default function BookingRegistration({ token }: { token: string }) {
         if (active) {
           setDetails(data);
           setPayee(data.profile?.payee || "Individual");
+          setPaymentType(
+            data.paymentType || data.profile?.preferredPaymentType || "",
+          );
         }
       })
       .catch((e) => {
@@ -256,7 +261,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                         autoComplete="tel"
                         defaultValue={details.profile?.phone}
                         maxLength={300}
-                        required={details.booking.paymentType === "Mobilepay"}
+                        required={paymentType === "Mobilepay"}
                       />
                     </label>
                     <label>
@@ -304,9 +309,25 @@ export default function BookingRegistration({ token }: { token: string }) {
                       />
                     </label>
                   )}
+                  <label>
+                    Preferred payment method
+                    <select
+                      name="preferredPaymentType"
+                      value={paymentType}
+                      onChange={(e) => setPaymentType(e.target.value)}
+                      required
+                    >
+                      <option value="" disabled>
+                        Select payment method
+                      </option>
+                      <option>Cash</option>
+                      <option>Bank transfer</option>
+                      <option>Mobilepay</option>
+                    </select>
+                  </label>
                   <BankFields profile={details.profile || undefined} />
                   <p className="fine">
-                    Payment method · {details.booking.paymentType}.{" "}
+                    {paymentType && <>Payment method · {paymentType}. </>}{" "}
                     {details.booking.fee > 0 && (
                       <>Fee per musician · {money(details.booking.fee)}.</>
                     )}

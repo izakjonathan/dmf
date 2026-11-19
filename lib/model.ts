@@ -64,6 +64,9 @@ export const musicianSchema = z
     address: text.min(5),
     band: text,
     payee: z.enum(["Individual", "Business"]),
+    preferredPaymentType: z
+      .enum(["Cash", "Bank transfer", "Mobilepay"])
+      .optional(),
     cvr: z.string().regex(/^(\d{8})?$/),
     cpr: z.string().regex(/^(\d{6}-?\d{4})?$/),
     registration: z.string().default(""),

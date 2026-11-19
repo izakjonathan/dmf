@@ -285,8 +285,7 @@ export default function Bookings({
                   <Schedule booking={booking} />
                   <p>
                     {money(booking.fee)} per musician ·{" "}
-                    {money(booking.fee * booking.expectedMembers)} total ·{" "}
-                    {booking.paymentType}
+                    {money(booking.fee * booking.expectedMembers)} total
                   </p>
                   <ul className="payment-list">
                     {booking.members.map((member) => (
@@ -296,7 +295,7 @@ export default function Bookings({
                           <small>{member.email}</small>
                         </span>
                         <span>
-                          {member.status}
+                          {member.status} · {member.paymentType}
                           {member.contractId &&
                             member.status === "Artist signature needed" && (
                               <button
@@ -560,7 +559,7 @@ export default function Bookings({
                 <strong>{money(booking.fee)}</strong>
               </div>
               <p>
-                {booking.act} · {booking.date} · {booking.paymentType}
+                {booking.act} · {booking.date} · {member.paymentType}
               </p>
               <p>
                 {member.status} · Due {booking.dueOn}

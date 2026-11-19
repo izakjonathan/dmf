@@ -161,7 +161,11 @@ test("booking API completes registration, signatures, attendance and payment wit
     assert.equal(verified.profile.account, person.account);
     assert.equal(verified.profile.cpr, undefined);
     const submitted = await artist.POST(
-      post({ action: "register", verification: proof, profile: person }),
+      post({
+        action: "register",
+        verification: proof,
+        profile: { ...person, preferredPaymentType: "Bank transfer" },
+      }),
       context,
     );
     assert.equal(submitted.status, 200);

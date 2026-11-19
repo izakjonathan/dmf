@@ -232,7 +232,7 @@ function rowsFor(state) {
     bookingMembers.push([b.id,b.date,b.act,m.musicianId,m.name,m.email,m.contractId || "",m.attendance || "",m.paymentId || "",b.approvedBy || "",b.confirmedBy || "",b.confirmedAt || "",b.attendanceNote || ""]);
     const signed = (state.contracts || []).some(c=>c.id===m.contractId && c.bookingVersion===b.version);
     const status = m.paymentId ? "Paid" : b.cancelled ? "Cancelled" : b.approvedVersion!==b.version ? "Company approval needed" : !signed ? "Artist signature needed" : !b.confirmedAt ? "Performance confirmation needed" : m.attendance!=="played" ? "Performance exception" : "Ready to pay";
-    bookingPayments.push([b.id,b.date,b.act,m.name,m.email,b.fee/100,b.paymentType,b.dueOn,status,m.paymentId || ""]);
+    bookingPayments.push([b.id,b.date,b.act,m.name,m.email,b.fee/100,m.paymentType || b.paymentType,b.dueOn,status,m.paymentId || ""]);
   }
   for (const mail of state.bookingMail || []) if (mail.kind!=="verification") bookingEmails.push([mail.bookingId,mail.to,mail.kind,mail.status,mail.sentAt || "",mail.error || ""]);
   return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary,Contracts:contracts,
@@ -406,7 +406,9 @@ function ensureBookingSheet(book) {
   sheet.getRange("E:E").setNumberFormat('#,##0.00 "kr."');
   sheet.getRange("A1:H1").setBackground("#1f2d48").setFontColor("#ffffff").setFontWeight("bold");
   sheet.getRange("I1:N1").setBackground("#444444").setFontColor("#ffffff").setFontWeight("bold");
-  sheet.getRange("A1:H1").setNote("Enter one act per row. Required: date, act name, contact email and number of musicians. Fees are DKK per musician. Payment type defaults to Bank transfer. Cancelled accepts Yes or No. Stagebook manages columns I:N.");
+  sheet.getRange("F2:F" + sheet.getMaxRows()).clearDataValidations();
+  sheet.getRange("F1").setNote("Stagebook fills this from the artists’ payment method selections. Mixed means band members chose different methods.");
+  sheet.getRange("A1:H1").setNote("Enter one act per row. Required: date, act name, contact email and number of musicians. Fees are DKK per musician. Artists choose their payment method in the booking form. Stagebook manages column F. Cancelled accepts Yes or No. Stagebook manages columns I:N.");
   return sheet;
 }
 function bookingSheetEdited(event) {
@@ -453,6 +455,11 @@ function nextBookingWeekday(date) {
   do { day.setUTCDate(day.getUTCDate()+1); } while ([0,6].includes(day.getUTCDay()));
   return day.toISOString().slice(0,10);
 }
+function bookingSourceSignature(value) {
+  if (!value) return value;
+  try { const input = JSON.parse(value); delete input.paymentType; return JSON.stringify(input); }
+  catch (error) { return value; }
+}
 function syncBookingRows(book,state,props) {
   const sheet = ensureBookingSheet(book);
   state.bookings = state.bookings || [];
@@ -470,14 +477,12 @@ function syncBookingRows(book,state,props) {
     const contactEmail = String(row[2] || "").trim().toLowerCase();
     const expectedMembers = Number(row[3]);
     const feeDkk = row[4] === "" ? 0 : Number(row[4]);
-    const paymentType = String(row[5] || "Bank transfer").trim();
     const dueOn = row[6] === "" ? date && nextBookingWeekday(date) : bookingDate(row[6],zone);
     const cancelledText = String(row[7] || "No").trim().toLowerCase();
     const cancelled = ["yes","true","cancelled"].includes(cancelledText);
     if (!date || !act || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) issue = "Enter a valid date, act and contact email.";
     if (!Number.isInteger(expectedMembers) || expectedMembers < 1 || expectedMembers > 100) issue = "Musicians must be a whole number between 1 and 100.";
     if (!Number.isFinite(feeDkk) || feeDkk < 0 || feeDkk > 1000000) issue = "Enter a valid fee in DKK per musician.";
-    if (!["Cash","Bank transfer","Mobilepay"].includes(paymentType)) issue = "Payment type must be Cash, Bank transfer or Mobilepay.";
     if (!dueOn) issue = "Enter a valid payment due date.";
     if (!["yes","no","true","false","cancelled"].includes(cancelledText)) issue = "Cancelled must be Yes or No.";
     if (id && (!/^[a-f0-9-]{36}$/i.test(id) || seen.has(id))) issue = "Duplicate or invalid Booking ID. Keep the original row and clear the copied ID to create another booking.";
@@ -488,7 +493,7 @@ function syncBookingRows(book,state,props) {
       sheet.getRange(index+2,14).setValue(issue);
       return;
     }
-    const input = {date,act,contactEmail,expectedMembers,fee:Math.round(feeDkk*100),paymentType,dueOn,cancelled};
+    const input = {date,act,contactEmail,expectedMembers,fee:Math.round(feeDkk*100),dueOn,cancelled};
     const sourceSignature = JSON.stringify(input);
     if (!id) {
       id = Utilities.getUuid();
@@ -496,9 +501,9 @@ function syncBookingRows(book,state,props) {
       seen.add(id);
     }
     if (!booking) {
-      booking = {...input,id,version:1,members:[],sourceSignature,sourceVersion:1};
+      booking = {...input,paymentType:"Bank transfer",id,version:1,members:[],sourceSignature,sourceVersion:1};
       state.bookings.push(booking);
-    } else if (booking.sourceSignature !== sourceSignature) {
+    } else if (bookingSourceSignature(booking.sourceSignature) !== sourceSignature) {
       if (booking.members.some(member => member.paymentId)) {
         booking.sourceError = "This booking has processed payments. Restore the input values and create a separate booking for any new performance.";
       } else {
@@ -509,7 +514,7 @@ function syncBookingRows(book,state,props) {
           mail.status = "failed"; mail.error = "Booking changed. Use its current links.";
         }
       }
-    } else booking.sourceError = undefined;
+    } else { booking.sourceError = undefined; booking.sourceSignature = sourceSignature; }
     if (booking.sourceError) { sheet.getRange(index+2,14).setValue(booking.sourceError); return; }
     const url = "https://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:"+id,props);
     const mailId = "invitation:"+id+":"+(booking.sourceVersion || 1);
@@ -519,6 +524,8 @@ function syncBookingRows(book,state,props) {
         body:"You are booked at "+state.venue.name+" on "+date+".\n\n"+url+
           "\n\nPlease complete the act schedule, lineup and agreed fee, and forward this booking link to EVERY performing musician. Each musician must verify their own email and register personal and payment details before playing. The company will approve the agreement and send individual contracts to sign.\n\nQuestions: "+state.venue.email});
     }
+    const methods = Array.from(new Set(booking.members.map(member => member.paymentType || booking.paymentType)));
+    sheet.getRange(index+2,6).setValue(methods.length > 1 ? "Mixed" : methods[0] || "");
     const emails = state.bookingMail.filter(mail=>mail.bookingId===id && mail.kind!=="verification");
     const status = booking.cancelled ? "Cancelled" : booking.confirmedAt ? "Performance confirmed" : booking.approvedVersion===booking.version ? "Company signed" : booking.members.length===booking.expectedMembers && booking.performance ? "Ready for approval" : "Collecting details";
     sheet.getRange(index+2,10,1,5).setValues([[status,url,booking.members.length+" / "+booking.expectedMembers,

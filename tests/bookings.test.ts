@@ -224,12 +224,14 @@ function sheetFixture(rows: unknown[][]) {
         if (col === 9) inputRows[row - 2][8] = value;
         outputs.set(row + ":" + col, value);
       },
+      clearDataValidations: () => {},
       setNumberFormat: () => {},
       setBackground: () => sheet.getRange(row, col),
       setFontColor: () => sheet.getRange(row, col),
       setFontWeight: () => sheet.getRange(row, col),
       setNote: () => {},
     }),
+    getMaxRows: () => 1000,
     setFrozenRows: () => {},
   };
   const book = {
@@ -507,4 +509,84 @@ test("missing booking tabs get Google-assigned IDs and are reused on retries", (
     assert.ok(ids.includes(1));
     assert.ok(ids.includes(100));
   }
+});
+
+test("each band member's chosen payment method reaches their agreement and processed payment", () => {
+  const { state, booking } = fixture();
+  booking.members[0].paymentType = "Cash";
+  booking.members[1].paymentType = "Mobilepay";
+  approve(state, booking);
+  assert.equal(state.invites[0].offer?.paymentType, "Cash");
+  assert.equal(state.invites[1].offer?.paymentType, "Mobilepay");
+  sign(state, booking);
+  confirmBooking(state, booking.id, {
+    by: "Employee",
+    members: booking.members.map((m) => ({ id: m.id, status: "played" })),
+  });
+  booking.paymentType = "Bank transfer";
+  markBookingsPaid(state, {
+    by: "Owner",
+    paidOn: today(),
+    members: booking.members.map((m) => ({
+      bookingId: booking.id,
+      memberId: m.id,
+    })),
+  });
+  assert.deepEqual(
+    state.payments.slice(-2).map((p) => p.paymentType),
+    ["Cash", "Mobilepay"],
+  );
+});
+
+test("column F becomes an artist-supplied summary without invalidating an existing approval", () => {
+  const state = demoWorkspace();
+  const f = sheetFixture([
+    [
+      today(),
+      "Band",
+      "band@example.com",
+      2,
+      3150,
+      "Bank transfer",
+      "",
+      "No",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+    ],
+  ]);
+  runInNewContext(script + "\nsyncBookingRows(book,state,props);", {
+    state,
+    ...f,
+  });
+  const booking = state.bookings![0];
+  booking.approvedVersion = booking.version;
+  const oldSignature = JSON.parse(booking.sourceSignature!);
+  const { dueOn, cancelled, ...other } = oldSignature;
+  booking.sourceSignature = JSON.stringify({
+    ...other,
+    paymentType: "Bank transfer",
+    dueOn,
+    cancelled,
+  });
+  booking.members = state.musicians
+    .slice(0, 2)
+    .map((m, i) => ({
+      id: crypto.randomUUID(),
+      musicianId: m.id,
+      name: m.name,
+      email: m.email,
+      paymentType: i ? "Mobilepay" : "Cash",
+    }));
+  f.inputRows[0][5] = "Mixed";
+  runInNewContext(script + "\nsyncBookingRows(book,state,props);", {
+    state,
+    ...f,
+  });
+  assert.equal(booking.version, booking.approvedVersion);
+  assert.equal(f.outputs.get("2:6"), "Mixed");
+  assert.equal(booking.sourceError, undefined);
 });

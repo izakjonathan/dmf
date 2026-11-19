@@ -17,6 +17,7 @@ export type BookingMember = {
   email: string;
   name: string;
   contractId?: string;
+  paymentType?: "Cash" | "Bank transfer" | "Mobilepay";
   attendance?: "played" | "absent" | "issue";
   paymentId?: string;
 };
@@ -150,7 +151,7 @@ export function approveBooking(
         },
         performanceDate: booking.date,
         fee: inputValues.fee,
-        paymentType: booking.paymentType,
+        paymentType: member.paymentType || booking.paymentType,
         payOn: inputValues.dueOn,
         performerEmail: member.email,
         returnBy: booking.date,
@@ -269,7 +270,8 @@ export function markBookingsPaid(state: Workspace, input: unknown) {
       performedOn: booking.date,
       band: booking.act,
       amount: contract.offer.fee,
-      paymentType: booking.paymentType,
+      paymentType:
+        contract.offer.paymentType || member.paymentType || booking.paymentType,
       kind: "Payment",
       reference: value.reference,
       notes: "Payment confirmed by " + value.by,
@@ -291,6 +293,7 @@ export function bookingOverview(state: Workspace) {
     members: booking.members.map((member) => ({
       ...member,
       status: pendingReason(state, booking, member),
+      paymentType: member.paymentType || booking.paymentType,
     })),
     mail: (state.bookingMail || [])
       .filter(
