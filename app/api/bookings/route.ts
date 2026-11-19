@@ -17,6 +17,7 @@ import {
 import {
   approveBooking,
   bookingOverview,
+  isCurrentBookingMail,
   confirmBooking,
   markBookingsPaid,
 } from "@/lib/bookings";
@@ -156,7 +157,13 @@ export async function POST(req: Request) {
       const mail = state.bookingMail?.find(
         (m) => m.id === mailId && m.bookingId === input.id,
       );
-      if (!mail || mail.status !== "failed")
+      const booking = state.bookings?.find((b) => b.id === input.id);
+      if (
+        !mail ||
+        mail.status !== "failed" ||
+        !booking ||
+        !isCurrentBookingMail(mail, booking)
+      )
         throw Error(
           "Only a confirmed failed email can be retried. Copy the link for an unconfirmed delivery.",
         );

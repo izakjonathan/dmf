@@ -50,11 +50,12 @@ export type BookingMail = {
   id: string;
   bookingId: string;
   memberId?: string;
+  sourceVersion?: number;
   to: string;
   subject: string;
   body: string;
   kind: "invitation" | "verification" | "contract" | "reminder" | "approval";
-  status: "pending" | "sent" | "failed" | "uncertain";
+  status: "pending" | "sent" | "failed" | "uncertain" | "superseded";
   createdAt: string;
   sentAt?: string;
   error?: string;
@@ -287,6 +288,17 @@ export function markBookingsPaid(state: Workspace, input: unknown) {
     member.paymentId = payment.id;
   }
 }
+export function isCurrentBookingMail(mail: BookingMail, booking: Booking) {
+  return (
+    mail.status !== "superseded" &&
+    (!mail.sourceVersion ||
+      mail.sourceVersion === (booking.sourceVersion || 1)) &&
+    !/^(Booking changed\.|Signature no longer needed\.|Agreement is no longer awaiting signature\.)/.test(
+      mail.error || "",
+    )
+  );
+}
+
 export function bookingOverview(state: Workspace) {
   return (state.bookings || []).map((booking) => ({
     ...booking,
@@ -299,13 +311,15 @@ export function bookingOverview(state: Workspace) {
       .filter(
         (mail) => mail.bookingId === booking.id && mail.kind !== "verification",
       )
-      .map(({ id, to, kind, status, error, sentAt }) => ({
-        id,
-        to,
-        kind,
-        status,
-        error,
-        sentAt,
+      .map((mail) => ({
+        id: mail.id,
+        to: mail.to,
+        kind: mail.kind,
+        status: isCurrentBookingMail(mail, booking)
+          ? mail.status
+          : "superseded",
+        error: mail.error,
+        sentAt: mail.sentAt,
       })),
   }));
 }

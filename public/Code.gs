@@ -65,7 +65,9 @@ function doPost(event) {
         queueBookingReminders(state,props);
         writeBookingState(book,state);
       }
-      return respond(processBookingMail(book,state,props));
+      const result = processBookingMail(book,state,props);
+      refreshBookingEmailStatuses(book,state);
+      return respond(result);
     }
     if (request.action === "emailContracts") {
       step = "sending contract emails";
@@ -438,6 +440,7 @@ function runBookingAutomation() {
     queueBookingReminders(state,props);
     writeBookingState(book,state);
     processBookingMail(book,state,props);
+    refreshBookingEmailStatuses(book,state);
   } catch (error) {
     console.error("Stagebook booking automation: " + error.message);
     throw error;
@@ -511,7 +514,7 @@ function syncBookingRows(book,state,props) {
         for (const member of booking.members) { member.contractId = undefined; member.attendance = undefined; }
         for (const invite of state.invites) if (invite.bookingId === id && !invite.signedAt) invite.revoked = true;
         for (const mail of state.bookingMail) if (mail.bookingId === id && mail.status === "pending") {
-          mail.status = "failed"; mail.error = "Booking changed. Use its current links.";
+          mail.status = "superseded"; mail.error = "Booking changed. Use its current links.";
         }
       }
     } else { booking.sourceError = undefined; booking.sourceSignature = sourceSignature; }
@@ -526,10 +529,10 @@ function syncBookingRows(book,state,props) {
     }
     const methods = Array.from(new Set(booking.members.map(member => member.paymentType || booking.paymentType)));
     sheet.getRange(index+2,6).setValue(methods.length > 1 ? "Mixed" : methods[0] || "");
-    const emails = state.bookingMail.filter(mail=>mail.bookingId===id && mail.kind!=="verification");
+    for (const mail of state.bookingMail) if (mail.bookingId===id && mail.status!=="sent" && !currentBookingMail(mail,booking)) mail.status="superseded";
     const status = booking.cancelled ? "Cancelled" : booking.confirmedAt ? "Performance confirmed" : booking.approvedVersion===booking.version ? "Company signed" : booking.members.length===booking.expectedMembers && booking.performance ? "Ready for approval" : "Collecting details";
     sheet.getRange(index+2,10,1,5).setValues([[status,url,booking.members.length+" / "+booking.expectedMembers,
-      emails.some(mail=>["failed","uncertain"].includes(mail.status)) ? "Needs attention" : emails.some(mail=>mail.status==="pending") ? "Queued" : "Sent",booking.sourceError || ""]]);
+      bookingEmailStatus(state,booking),booking.sourceError || ""]]);
   });
   for (const booking of state.bookings) if (!seen.has(booking.id)) {
     booking.sourceError = "The booking row is missing. Restore it in the sheet, or restore it and set Cancelled to Yes.";
@@ -576,20 +579,22 @@ function processBookingMail(book,state,props) {
   try { quota = MailApp.getRemainingDailyQuota(); }
   catch (error) { quota = 0; }
   for (const mail of state.bookingMail || []) {
+    const currentBooking = (state.bookings || []).find(b=>b.id===mail.bookingId);
+    if (currentBooking && mail.status!=="sent" && !currentBookingMail(mail,currentBooking)) mail.status="superseded";
     if (mail.status!=="pending") continue;
     // Let a sheet row settle before sending its first invitation while it is being entered.
     if (mail.kind==="invitation" && Date.now()-Date.parse(mail.createdAt)<60000) continue;
     const booking = (state.bookings || []).find(b=>b.id===mail.bookingId);
     if (!booking || booking.cancelled || booking.sourceError) { mail.status="failed"; mail.error="Booking is cancelled or needs attention."; delivery.failed++; continue; }
-    if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="failed"; mail.error="Booking changed. Use its current invitation."; delivery.failed++; continue; }
+    if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="superseded"; mail.error="Booking changed. Use its current invitation."; continue; }
     if (mail.kind==="reminder" && mail.memberId) {
       const member = booking.members.find(m=>m.id===mail.memberId);
       const invite = member && state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt && i.bookingVersion===booking.version);
-      if (!invite) { mail.status="failed"; mail.error="Signature no longer needed."; continue; }
+      if (!invite) { mail.status="superseded"; mail.error="Signature no longer needed."; continue; }
     }
     if (mail.kind==="contract") {
       const invite = state.invites.find(i=>i.id===mail.id.slice(9));
-      if (!invite || invite.revoked || invite.signedAt || invite.bookingVersion!==booking.version) { mail.status="failed"; mail.error="Agreement is no longer awaiting signature."; delivery.failed++; continue; }
+      if (!invite || invite.revoked || invite.signedAt || invite.bookingVersion!==booking.version) { mail.status="superseded"; mail.error="Agreement is no longer awaiting signature."; continue; }
     }
     if (mail.kind==="verification" && Date.now()-Date.parse(mail.createdAt)>30*60000) { mail.status="failed"; mail.error="Verification expired. Request a new link."; delivery.failed++; continue; }
     const key="stagebook-booking-mail:"+mail.id;
@@ -604,13 +609,7 @@ function processBookingMail(book,state,props) {
       MailApp.sendEmail({to:mail.to,replyTo:state.venue.email,name:state.venue.name,subject:mail.subject,body:mail.body});
       mail.status="sent"; mail.sentAt=new Date().toISOString(); mail.error=undefined; quota--; delivery.sent++;
       props.setProperty(key,mail.sentAt); completed.push(key);
-      if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="failed"; mail.error="Booking changed. Use its current invitation."; delivery.failed++; continue; }
-    if (mail.kind==="reminder" && mail.memberId) {
-      const member = booking.members.find(m=>m.id===mail.memberId);
-      const invite = member && state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt && i.bookingVersion===booking.version);
-      if (!invite) { mail.status="failed"; mail.error="Signature no longer needed."; continue; }
-    }
-    if (mail.kind==="contract") {
+      if (mail.kind==="contract") {
         const invite=state.invites.find(i=>i.id===mail.id.slice(9));
         if (invite) invite.emailSentAt=mail.sentAt;
       }
@@ -624,4 +623,27 @@ function processBookingMail(book,state,props) {
   writeBookingState(book,state);
   for (const key of completed) props.deleteProperty(key);
   return {ok:true,state,delivery};
+}
+
+function currentBookingMail(mail,booking) {
+  return mail.status!=="superseded" &&
+    (!mail.sourceVersion || mail.sourceVersion===(booking.sourceVersion || 1)) &&
+    !/^(Booking changed\.|Signature no longer needed\.|Agreement is no longer awaiting signature\.)/.test(mail.error || "");
+}
+function bookingEmailStatus(state,booking) {
+  if (booking.cancelled) return "Cancelled";
+  const emails=(state.bookingMail || []).filter(mail=>mail.bookingId===booking.id && mail.kind!=="verification" && currentBookingMail(mail,booking));
+  if (emails.some(mail=>["failed","uncertain"].includes(mail.status))) return "Needs attention";
+  if (emails.some(mail=>mail.status==="pending")) return "Queued";
+  return emails.length ? "Sent" : "No email pending";
+}
+function refreshBookingEmailStatuses(book,state) {
+  const sheet=book.getSheetByName("Bookings");
+  if (!sheet || sheet.getLastRow()<2) return;
+  const ids=sheet.getRange(2,9,sheet.getLastRow()-1,1).getValues();
+  const values=ids.map(row=>{
+    const booking=(state.bookings || []).find(item=>item.id===String(row[0]));
+    return [booking ? bookingEmailStatus(state,booking) : ""];
+  });
+  sheet.getRange(2,13,values.length,1).setValues(values);
 }

@@ -590,3 +590,46 @@ test("column F becomes an artist-supplied summary without invalidating an existi
   assert.equal(f.outputs.get("2:6"), "Mixed");
   assert.equal(booking.sourceError, undefined);
 });
+
+test("superseded invitations do not mask the current email delivery status", () => {
+  const { booking, state } = fixture();
+  booking.sourceVersion = 3;
+  const old = {
+    id: "old", bookingId: booking.id, to: booking.contactEmail,
+    kind: "invitation", status: "failed", sourceVersion: 2,
+    error: "Booking changed. Use its current links.",
+  };
+  const current = { ...old, id: "current", sourceVersion: 3, status: "pending", error: undefined };
+  state.bookingMail = [old, current] as any;
+  const context = { state, booking, result: "" };
+  runInNewContext(script + "\nresult=bookingEmailStatus(state,booking);", context);
+  assert.equal(context.result, "Queued");
+  current.status = "sent";
+  const sentContext = { state, booking, result: "" };
+  runInNewContext(script + "\nresult=bookingEmailStatus(state,booking);", sentContext);
+  assert.equal(sentContext.result, "Sent");
+  current.status = "failed";
+  current.error = "MAIL_PERMISSION" as any;
+  const failedContext = { state, booking, result: "" };
+  runInNewContext(script + "\nresult=bookingEmailStatus(state,booking);", failedContext);
+  assert.equal(failedContext.result, "Needs attention");
+});
+
+test("email status refresh updates only the booking email status column", () => {
+  const { booking, state } = fixture();
+  state.bookingMail = [];
+  const writes: unknown[] = [];
+  const sheet = {
+    getLastRow: () => 3,
+    getRange: (row: number, column: number, count: number, width: number) => {
+      assert.equal(row, 2); assert.equal(count, 2); assert.equal(width, 1);
+      if (column === 9) return { getValues: () => [[booking.id], [""]] };
+      assert.equal(column, 13);
+      return { setValues: (values: unknown) => writes.push(JSON.parse(JSON.stringify(values))) };
+    },
+  };
+  runInNewContext(script + "\nrefreshBookingEmailStatuses(book,state);", {
+    state, book: { getSheetByName: (name: string) => { assert.equal(name, "Bookings"); return sheet; } },
+  });
+  assert.deepEqual(writes, [[["No email pending"], [""]]]);
+});
