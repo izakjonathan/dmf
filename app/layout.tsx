@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import "./style.css";
-import "./workspace.css";
 export const metadata: Metadata = {
   title: "Stagebook · Musician payments",
   description: "Musician registration and venue payment records.",

@@ -24,7 +24,6 @@ import {
 } from "@/lib/model";
 
 import Bookings from "./Bookings";
-import { Icon } from "./Icon";
 import { ViewportTheme } from "./ViewportTheme";
 import { BankFields } from "./BankFields";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
@@ -74,24 +73,6 @@ const pages: Page[] = [
   "Venue",
   "Contracts",
 ];
-const pageIcons: Record<Page, string> = {
-  Bookings: "calendar",
-  Overview: "grid",
-  Musicians: "users",
-  Payments: "wallet",
-  Reports: "chart",
-  Venue: "venue",
-  Contracts: "file",
-};
-const pageDescriptions: Record<Page, string> = {
-  Bookings: "Your live music, in order.",
-  Overview: "A clear view of your musician payments.",
-  Musicians: "The people behind the performances.",
-  Payments: "From signed agreement to settled payment.",
-  Reports: "Follow the numbers behind your live music.",
-  Venue: "Your venue, ready for every agreement.",
-  Contracts: "Every agreement. Every signature.",
-};
 function fields(event: FormEvent<HTMLFormElement>) {
   event.preventDefault();
   return Object.fromEntries(new FormData(event.currentTarget));
@@ -488,14 +469,6 @@ export default function Dashboard() {
       (paidByMusician.get(payment.musicianId) ?? 0) + net(payment),
     );
   }
-  async function logout() {
-    setActionsOpen(false);
-    setSigningUrl("");
-    setEmailCheck(undefined);
-    go("Overview");
-    await request("/api/session", { action: "logout" });
-    await start();
-  }
   const paid = (prefix: string) =>
     data.payments
       .filter((p) => p.paidOn.startsWith(prefix))
@@ -503,60 +476,22 @@ export default function Dashboard() {
   return (
     <div className="shell">
       <ViewportTheme />
-      <aside className="app-sidebar">
-        <a className="app-wordmark" href="/" aria-label="Stagebook home">
-          <span className="app-symbol">
-            <i />
-            <i />
-            <i />
-          </span>
-          stagebook<span className="brand-period">.</span>
-        </a>
-        <span className="sidebar-caption">WORKSPACE</span>
-        <nav className="app-navigation" aria-label="Main navigation">
-          {pages.map((item) => (
-            <button
-              key={item}
-              aria-current={page === item ? "page" : undefined}
-              onClick={() => go(item)}
-            >
-              <Icon name={pageIcons[item]} />
-              <span>{item}</span>
-              {page === item && <span className="nav-indicator" />}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="venue-switch">
-            <span className="venue-avatar">
-              {(data.venue.name || "S").slice(0, 1)}
-            </span>
-            <span>
-              <strong>{data.venue.name || "Your venue"}</strong>
-              <small>Venue workspace</small>
-            </span>
-          </div>
-          <button
-            className="sidebar-logout"
-            disabled={busy}
-            onClick={() => void logout()}
-          >
-            <Icon name="logout" />
-            Sign out
-          </button>
-        </div>
-      </aside>
       <header className="workspace-header">
-        <div className="app-breadcrumb">
-          <span className="mobile-brand">stagebook.</span>
-          <span className="desktop-breadcrumb">
-            Workspace <span>/</span> <strong>{page}</strong>
-          </span>
-        </div>
-        <div className="app-connection">
-          <span />
-          Connected
-        </div>
+        <h1>{page === "Overview" ? "Musician payments" : page}</h1>
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={async () => {
+            setActionsOpen(false);
+            setSigningUrl("");
+            setEmailCheck(undefined);
+            go("Overview");
+            await request("/api/session", { action: "logout" });
+            await start();
+          }}
+        >
+          Sign out
+        </button>
         <div className="workspace-menu-wrap">
           <button
             className="workspace-menu-toggle"
@@ -583,37 +518,15 @@ export default function Dashboard() {
                   key={item}
                   onClick={() => go(item)}
                 >
-                  <Icon name={pageIcons[item]} />
-                  <span>{item}</span>
+                  {item}
                 </button>
               ))}
-              <button
-                className="popup-logout"
-                disabled={busy}
-                onClick={() => void logout()}
-              >
-                <Icon name="logout" />
-                Sign out
-              </button>
             </nav>
           </div>
         </div>
       </header>
       <main className="main">
         <section className="content">
-          <div className="app-page-heading">
-            <div>
-              <h1>{page}</h1>
-              <p>{pageDescriptions[page]}</p>
-            </div>
-            <span className="app-today">
-              {new Intl.DateTimeFormat("en-GB", {
-                day: "numeric",
-                month: "short",
-                year: "numeric",
-              }).format(new Date())}
-            </span>
-          </div>
           {error && !modal && (
             <p className="error" role="alert">
               {error}
