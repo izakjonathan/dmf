@@ -572,15 +572,13 @@ test("column F becomes an artist-supplied summary without invalidating an existi
     dueOn,
     cancelled,
   });
-  booking.members = state.musicians
-    .slice(0, 2)
-    .map((m, i) => ({
-      id: crypto.randomUUID(),
-      musicianId: m.id,
-      name: m.name,
-      email: m.email,
-      paymentType: i ? "Mobilepay" : "Cash",
-    }));
+  booking.members = state.musicians.slice(0, 2).map((m, i) => ({
+    id: crypto.randomUUID(),
+    musicianId: m.id,
+    name: m.name,
+    email: m.email,
+    paymentType: i ? "Mobilepay" : "Cash",
+  }));
   f.inputRows[0][5] = "Mixed";
   runInNewContext(script + "\nsyncBookingRows(book,state,props);", {
     state,
@@ -595,23 +593,42 @@ test("superseded invitations do not mask the current email delivery status", () 
   const { booking, state } = fixture();
   booking.sourceVersion = 3;
   const old = {
-    id: "old", bookingId: booking.id, to: booking.contactEmail,
-    kind: "invitation", status: "failed", sourceVersion: 2,
+    id: "old",
+    bookingId: booking.id,
+    to: booking.contactEmail,
+    kind: "invitation",
+    status: "failed",
+    sourceVersion: 2,
     error: "Booking changed. Use its current links.",
   };
-  const current = { ...old, id: "current", sourceVersion: 3, status: "pending", error: undefined };
+  const current = {
+    ...old,
+    id: "current",
+    sourceVersion: 3,
+    status: "pending",
+    error: undefined,
+  };
   state.bookingMail = [old, current] as any;
   const context = { state, booking, result: "" };
-  runInNewContext(script + "\nresult=bookingEmailStatus(state,booking);", context);
+  runInNewContext(
+    script + "\nresult=bookingEmailStatus(state,booking);",
+    context,
+  );
   assert.equal(context.result, "Queued");
   current.status = "sent";
   const sentContext = { state, booking, result: "" };
-  runInNewContext(script + "\nresult=bookingEmailStatus(state,booking);", sentContext);
+  runInNewContext(
+    script + "\nresult=bookingEmailStatus(state,booking);",
+    sentContext,
+  );
   assert.equal(sentContext.result, "Sent");
   current.status = "failed";
   current.error = "MAIL_PERMISSION" as any;
   const failedContext = { state, booking, result: "" };
-  runInNewContext(script + "\nresult=bookingEmailStatus(state,booking);", failedContext);
+  runInNewContext(
+    script + "\nresult=bookingEmailStatus(state,booking);",
+    failedContext,
+  );
   assert.equal(failedContext.result, "Needs attention");
 });
 
@@ -621,15 +638,273 @@ test("email status refresh updates only the booking email status column", () => 
   const writes: unknown[] = [];
   const sheet = {
     getLastRow: () => 3,
-    getRange: (row: number, column: number, count: number, width: number) => {
-      assert.equal(row, 2); assert.equal(count, 2); assert.equal(width, 1);
+    getRange: (
+      row: number | string,
+      column: number,
+      count: number,
+      width: number,
+    ) => {
+      if (row === "A1") return { getValue: () => "Performance date" };
+      assert.equal(row, 2);
+      assert.equal(count, 2);
+      assert.equal(width, 1);
       if (column === 9) return { getValues: () => [[booking.id], [""]] };
       assert.equal(column, 13);
-      return { setValues: (values: unknown) => writes.push(JSON.parse(JSON.stringify(values))) };
+      return {
+        setValues: (values: unknown) =>
+          writes.push(JSON.parse(JSON.stringify(values))),
+      };
     },
   };
   runInNewContext(script + "\nrefreshBookingEmailStatuses(book,state);", {
-    state, book: { getSheetByName: (name: string) => { assert.equal(name, "Bookings"); return sheet; } },
+    state,
+    book: {
+      getSheetByName: (name: string) => {
+        assert.equal(name, "Bookings");
+        return sheet;
+      },
+    },
   });
   assert.deepEqual(writes, [[["No email pending"], [""]]]);
+});
+
+function operationsFixture(
+  state: ReturnType<typeof demoWorkspace>,
+  row: unknown[],
+) {
+  const outputs = new Map<number, unknown[]>();
+  const rows = [row];
+  const sheet = {
+    getLastRow: () => 2,
+    getRange: (
+      r: number | string,
+      col?: number,
+      height?: number,
+      width?: number,
+    ) => ({
+      getValue: () => (r === "A1" ? "Dato" : row[(col || 1) - 1]),
+      getValues: () =>
+        typeof r === "number" && col === 23 ? [[row[22]]] : rows,
+      setValue: (value: unknown) => {
+        outputs.set(col!, [value]);
+        row[col! - 1] = value;
+      },
+      setValues: (values: unknown[][]) => {
+        outputs.set(col!, values[0]);
+        values[0].forEach((value, i) => (row[col! - 1 + i] = value));
+      },
+    }),
+  };
+  const book = {
+    getSheetByName: () => sheet,
+    getSpreadsheetTimeZone: () => "Europe/Copenhagen",
+  };
+  const props = { getProperty: () => "secret" };
+  const Utilities = {
+    getUuid: () => crypto.randomUUID(),
+    computeHmacSha256Signature: () => [1, 2, 3],
+    formatDate: (date: Date) => date.toISOString().slice(0, 10),
+  };
+  return { state, book, props, Utilities, outputs, row };
+}
+test("reference layout preserves staff columns, booking IDs, links and approved artist changes", () => {
+  const { state, booking } = fixture();
+  booking.sourceVersion = 1;
+  const source = {
+    date: booking.date,
+    act: booking.act,
+    contactEmail: booking.contactEmail,
+    expectedMembers: 2,
+    fee: booking.fee,
+    dueOn: booking.dueOn,
+    cancelled: false,
+  };
+  booking.sourceSignature = JSON.stringify(source);
+  booking.approvedVersion = booking.version;
+  const row: unknown[] = Array(28).fill("");
+  row[0] = booking.date;
+  row[2] = booking.act;
+  row[9] = booking.contactEmail;
+  row[6] = 2;
+  row[18] = booking.fee / 100;
+  row[20] = booking.dueOn;
+  row[21] = "No";
+  row[22] = booking.id;
+  const staffColumns = [3, 4, 7, 11, 12, 13, 14, 15, 16, 17];
+  const staff = [50, 1500, 30, "Ebbe", "sendt", true, false, true, false, true];
+  staffColumns.forEach((col, i) => (row[col] = staff[i]));
+  const f = operationsFixture(state, row);
+  runInNewContext(script + "\nsyncBookingRows(book,state,props);", f);
+  assert.equal(booking.id, row[22]);
+  assert.equal(booking.version, booking.approvedVersion);
+  assert.equal(row[5], 6300);
+  assert.equal(row[8], 1500 / 6300);
+  assert.equal(row[1], false);
+  assert.ok(String(row[24]).startsWith("https://dmf-eta.vercel.app/b/"));
+  assert.deepEqual(
+    staffColumns.map((col) => row[col]),
+    staff,
+  );
+  assert.equal((booking as any).operations.booker, "Ebbe");
+  row[4] = 2000;
+  row[13] = false;
+  runInNewContext(script + "\nsyncBookingRows(book,state,props);", { ...f });
+  assert.equal(booking.version, booking.approvedVersion);
+  assert.equal(
+    state.bookingMail?.filter((m) => m.kind === "invitation").length,
+    1,
+  );
+  booking.expectedMembers = 3;
+  booking.version++;
+  booking.approvedVersion = booking.version;
+  runInNewContext(script + "\nsyncBookingRows(book,state,props);", { ...f });
+  assert.equal(booking.version, booking.approvedVersion);
+  assert.equal(row[6], 3);
+  assert.equal(row[5], 9450);
+});
+test("payment completion comes only from real recorded payments and projection never writes staff fields", () => {
+  const { state, booking } = fixture();
+  const row: unknown[] = Array(28).fill("");
+  row[22] = booking.id;
+  row[4] = 0;
+  booking.members.forEach((m, i) => {
+    const p = { ...state.payments[0], id: crypto.randomUUID(), voidReason: "" };
+    state.payments.push(p);
+    m.paymentId = p.id;
+  });
+  const f = operationsFixture(state, row);
+  runInNewContext(script + "\nrefreshBookingProjection(book,state);", f);
+  assert.equal(row[1], true);
+  assert.equal(row[8], 0);
+  assert.ok([...f.outputs.keys()].every((col) => [2, 6, 9, 11].includes(col)));
+  state.payments.find(
+    (p) => p.id === booking.members[0].paymentId,
+  )!.voidReason = "Reversed";
+  runInNewContext(script + "\nrefreshBookingProjection(book,state);", { ...f });
+  assert.equal(row[1], false);
+});
+test("legacy row migration maps the source layout without changing staff inputs or IDs", () => {
+  const old = [
+    "2026-12-01",
+    "Act",
+    "band@example.com",
+    3,
+    3000,
+    "Mixed",
+    "2026-12-10",
+    "No",
+    "stable-id",
+    "Collecting details",
+    "private-link",
+    "1 / 3",
+    "Sent",
+    "",
+  ];
+  const ctx: any = { old, result: null };
+  runInNewContext(script + "\nresult=bookingRowFromLegacy(old);", ctx);
+  assert.equal(ctx.result.length, 28);
+  assert.equal(ctx.result[0], old[0]);
+  assert.equal(ctx.result[2], old[1]);
+  assert.equal(ctx.result[9], old[2]);
+  assert.equal(ctx.result[6], 3);
+  assert.equal(ctx.result[18], 3000);
+  assert.equal(ctx.result[22], "stable-id");
+  assert.equal(ctx.result[24], "private-link");
+  assert.ok(
+    [3, 4, 7, 11, 12, 13, 14, 15, 16, 17].every(
+      (col) => ctx.result[col] === "",
+    ),
+  );
+});
+
+test("upgrade keeps the original tab, refreshes legacy values and retains staff entries and staged additions", () => {
+  const legacyId = crypto.randomUUID();
+  const legacyRow = [
+    today(),
+    "Updated act",
+    "band@example.com",
+    3,
+    3200,
+    "Mixed",
+    today(),
+    "No",
+    legacyId,
+    "Collecting details",
+    "existing-link",
+    "1 / 3",
+    "Sent",
+    "",
+  ];
+  const stagedRow: any[] = Array(28).fill("");
+  stagedRow[0] = today();
+  stagedRow[2] = "Old title";
+  stagedRow[9] = "band@example.com";
+  stagedRow[22] = legacyId;
+  stagedRow[3] = 75;
+  stagedRow[11] = "Bertil";
+  stagedRow[15] = true;
+  const added: any[] = Array(28).fill("");
+  added[0] = today();
+  added[2] = "Another act";
+  added[9] = "new@example.com";
+  const sheets: any = {};
+  function sheet(name: string, data: any[][], columns: number) {
+    const result: any = {
+      name,
+      data,
+      getLastRow: () => result.data.length,
+      getMaxRows: () => 1000,
+      getMaxColumns: () => columns,
+      getRange: (row: number, col: number, height = 1, width = 1) => ({
+        getValue: () => result.data[0][0],
+        getValues: () => result.data.slice(row - 1, row - 1 + height),
+        setValues: (values: any[][]) =>
+          values.forEach((v, i) => (result.data[row - 1 + i] = Array.from(v))),
+        clearContent: () => {},
+      }),
+      setName: (next: string) => {
+        delete sheets[result.name];
+        result.name = next;
+        sheets[next] = result;
+      },
+      insertColumnsAfter: () => {
+        columns = 28;
+      },
+      insertRowsAfter: () => {},
+    };
+    sheets[name] = result;
+    return result;
+  }
+  const old = sheet("Bookings", [["Performance date"], legacyRow], 14);
+  const staged = sheet("Bookings v2", [["Dato"], stagedRow, added], 28);
+  const context: any = {
+    book: { getSheetByName: (name: string) => sheets[name] },
+    state: demoWorkspace(),
+    PropertiesService: {
+      getScriptProperties: () => ({ getProperty: () => "id" }),
+    },
+    SpreadsheetApp: { openById: () => context.book },
+    LockService: {
+      getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }),
+    },
+    Utilities: { formatDate: () => "20261120-120000" },
+    console: { info: () => {} },
+  };
+  context.state.auth = {} as any;
+  runInNewContext(
+    script +
+      `\nreadStoredState=()=>state;configureModernBookingSheet=()=>{};syncBookingRows=()=>{};writeBookingState=()=>{};
+    upgradeBookingSheet();`,
+    context,
+  );
+  assert.equal(sheets.Bookings, staged);
+  assert.equal(sheets["Bookings legacy 20261120-120000"], old);
+  assert.equal(staged.data[1][2], "Updated act");
+  assert.equal(staged.data[1][18], 3200);
+  assert.equal(staged.data[1][22], legacyId);
+  assert.equal(staged.data[1][24], "existing-link");
+  assert.equal(staged.data[1][3], 75);
+  assert.equal(staged.data[1][11], "Bertil");
+  assert.equal(staged.data[1][15], true);
+  assert.equal(staged.data[2][2], "Another act");
 });

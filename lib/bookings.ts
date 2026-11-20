@@ -45,6 +45,18 @@ export type Booking = {
   sourceError?: string;
   sourceVersion?: number;
   sourceSignature?: string;
+  operations?: {
+    ticketPrice?: unknown;
+    entranceIncome?: unknown;
+    guestCount?: unknown;
+    booker?: unknown;
+    infoSent?: unknown;
+    prReceived?: unknown;
+    facebook?: unknown;
+    website?: unknown;
+    winterJazz?: unknown;
+    instagram?: unknown;
+  };
 };
 export type BookingMail = {
   id: string;
