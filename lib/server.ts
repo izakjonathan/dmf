@@ -102,6 +102,16 @@ export async function sheets(action: string, data: object = {}) {
       "The sheet has a newer change. Refresh and try again.",
       409,
     );
+  if (!result.ok && result.error === "BOOKING_SOURCE_CHANGED")
+    throw new RequestError(
+      "The booking row changed or has an issue. Sync the booking and review it again.",
+      409,
+    );
+  if (!result.ok && action === "sheetBookingReview")
+    throw new RequestError(
+      "Update the existing Apps Script deployment before signing from Sheets.",
+      503,
+    );
   if (!result.ok && action === "emailContracts")
     throw new RequestError(
       result.error === "MAIL_STATUS_UNAVAILABLE"
@@ -167,9 +177,12 @@ export async function readState(): Promise<Workspace> {
 export async function metadata(): Promise<{ initialized: boolean }> {
   return sheets("metadata");
 }
-export async function writeState(state: Workspace) {
+export async function writeState(
+  state: Workspace,
+  options: { sheetBookingId?: string } = {},
+) {
   const next = { ...state, revision: state.revision + 1 };
-  await sheets("write", { state: next, expected: state.revision });
+  await sheets("write", { state: next, expected: state.revision, ...options });
   return next;
 }
 const cookieName = "stagebook_session";
@@ -224,31 +237,25 @@ export function findInvite(state: Workspace, raw: string) {
 }
 
 export async function probeContractEmail() {
-  // The invalid invite ID and empty URL force every email-capable adapter to skip sending.
   const deployment =
     process.env.GOOGLE_SCRIPT_URL?.match(/\/([\w-]+)\/exec$/)?.[1].slice(-8);
   try {
-    const result = await sheets("emailContracts", {
-      links: [{ id: "", url: "" }],
-    });
-    const issues = result.delivery?.issues ?? [];
-    const mail = issues.includes("MAIL_PERMISSION")
-      ? "permission"
-      : issues.includes("MAIL_UNCERTAIN")
-        ? "unavailable"
-        : result.delivery?.sent === 0 && result.delivery?.failed === 1
-          ? "connected"
-          : "unavailable";
-    return { deployment, mail };
-  } catch (error) {
+    const result = await sheets("health");
     return {
       deployment,
+      version: result.version,
+      scheduled: result.scheduled,
+      onEdit: result.onEdit,
+      quota: result.quota,
       mail:
-        error instanceof RequestError &&
-        error.message.startsWith("The deployed Apps Script")
-          ? "adapter-rejected-mail"
-          : "unavailable",
+        result.quota === null
+          ? "permission"
+          : result.quota === 0
+            ? "quota"
+            : "connected",
     };
+  } catch {
+    return { deployment, mail: "unavailable" };
   }
 }
 

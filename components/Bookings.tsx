@@ -8,7 +8,7 @@ import {
 } from "react";
 import { bookingOverview, signingDeadline, type Booking } from "@/lib/bookings";
 import { AttendanceEditor } from "./AttendanceEditor";
-import { dmfTemplate, money, today } from "@/lib/model";
+import { money, today } from "@/lib/model";
 function bookingDate(date: string) {
   const [year, month, day] = date.split("-");
   return `${day}/${month}/${year}`;
@@ -167,8 +167,12 @@ export default function Bookings({
             (result.delivery?.failed
               ? "Saved. Some emails need attention below."
               : {
+                  correctBooking:
+                    "Booking reopened. Sign the corrected terms from Google Sheets.",
                   approve:
                     "Company signature saved. Check email status for each signing request.",
+                  resendInvitation:
+                    "Current invitation queued for the next email run.",
                   reissue:
                     "New signing link created. Check email status for delivery.",
                   attendance: "Performance recorded.",
@@ -567,11 +571,12 @@ export default function Bookings({
                                     <small>{member.email}</small>
                                   </span>
                                   <span className="booking-member-status">
-                                    {member.status} · {member.paymentType}
+                                    {member.signatureStatus} ·{" "}
+                                    {member.paymentType}
                                     {member.signingDeadline &&
-                                      member.signingDeadline < today() &&
-                                      member.status ===
-                                        "Artist signature needed" && (
+                                      ["Expired", "Revoked"].includes(
+                                        member.signatureStatus,
+                                      ) && (
                                         <form
                                           onSubmit={(e) => {
                                             const fields = values(e);
@@ -604,8 +609,8 @@ export default function Bookings({
                                     {member.signingDeadline &&
                                       member.signingDeadline >= today() &&
                                       member.contractId &&
-                                      member.status ===
-                                        "Artist signature needed" && (
+                                      !member.signed &&
+                                      member.signatureStatus !== "Revoked" && (
                                         <button
                                           className="link"
                                           disabled={busy}
@@ -628,14 +633,70 @@ export default function Bookings({
                             </ul>
                             {!booking.cancelled &&
                               booking.approvedVersion !== booking.version && (
-                                <CompanyApproval
-                                  booking={booking}
-                                  busy={busy}
-                                  onApprove={(data) =>
-                                    void act("approve", booking.id, data)
-                                  }
-                                />
+                                <p className="fine">
+                                  To sign for the venue and email the musicians,
+                                  select this booking in Google Sheets and use
+                                  Stagebook → Review, sign and send contracts.
+                                </p>
                               )}
+                            {!booking.cancelled &&
+                              !booking.members.some((m) => m.paymentId) && (
+                                <details className="booking-form">
+                                  <summary>Correct terms or roster</summary>
+                                  <form
+                                    onSubmit={(event) => {
+                                      const fields = values(event);
+                                      void act("correctBooking", booking.id, {
+                                        reason: fields.reason,
+                                        memberId: fields.memberId || undefined,
+                                      });
+                                    }}
+                                  >
+                                    <p className="fine">
+                                      This reopens registration and requires a
+                                      new company signature. Existing signed
+                                      copies are retained. Attendance remains
+                                      recorded for the current lineup.
+                                    </p>
+                                    <label>
+                                      Remove a roster entry
+                                      <select name="memberId" defaultValue="">
+                                        <option value="">
+                                          Keep all musicians
+                                        </option>
+                                        {booking.members.map((member) => (
+                                          <option
+                                            key={member.id}
+                                            value={member.id}
+                                          >
+                                            {member.name} · {member.email}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                    <label>
+                                      Reason
+                                      <input
+                                        name="reason"
+                                        required
+                                        minLength={5}
+                                        maxLength={500}
+                                      />
+                                    </label>
+                                    <button
+                                      className="secondary"
+                                      disabled={busy}
+                                    >
+                                      Reopen booking
+                                    </button>
+                                  </form>
+                                </details>
+                              )}
+                            {booking.correction && (
+                              <p className="fine">
+                                Last correction · {booking.correction.reason}
+                              </p>
+                            )}
                             {booking.approvedBy && (
                               <p className="fine">
                                 Company signed by {booking.approvedBy} ·{" "}
@@ -711,6 +772,19 @@ export default function Bookings({
                               )}
                             <details className="booking-form">
                               <summary>Email status</summary>
+                              {!booking.cancelled &&
+                                !booking.sourceError &&
+                                booking.approvedVersion !== booking.version && (
+                                  <button
+                                    className="link"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      void act("resendInvitation", booking.id)
+                                    }
+                                  >
+                                    Resend invitation to {booking.contactEmail}
+                                  </button>
+                                )}
                               {booking.mail.length ? (
                                 booking.mail.map((mail) => (
                                   <div className="invite-row" key={mail.id}>
@@ -718,19 +792,20 @@ export default function Bookings({
                                       {mail.to} · {mail.kind} · {mail.status}
                                       {mail.error && <> · {mail.error}</>}
                                     </span>
-                                    {mail.status === "failed" && (
-                                      <button
-                                        className="secondary"
-                                        disabled={busy}
-                                        onClick={() =>
-                                          void act("retry", booking.id, {
-                                            mailId: mail.id,
-                                          })
-                                        }
-                                      >
-                                        Retry email
-                                      </button>
-                                    )}
+                                    {mail.status === "failed" &&
+                                      mail.kind !== "verification" && (
+                                        <button
+                                          className="secondary"
+                                          disabled={busy}
+                                          onClick={() =>
+                                            void act("retry", booking.id, {
+                                              mailId: mail.id,
+                                            })
+                                          }
+                                        >
+                                          Retry email
+                                        </button>
+                                      )}
                                   </div>
                                 ))
                               ) : (
@@ -780,8 +855,6 @@ export default function Bookings({
                           booking.members.every(
                             (m) => m.attendance === "played",
                           );
-                        const approved =
-                          booking.approvedVersion === booking.version;
                         const canConfirm =
                           !busy &&
                           !confirmed &&
@@ -872,41 +945,9 @@ export default function Bookings({
                                       the manager.
                                     </p>
                                   )}
-                                  {!approved && (
-                                    <details className="booking-form night-contract">
-                                      <summary>
-                                        Confirm, sign and send contracts
-                                      </summary>
-                                      <CompanyApproval
-                                        booking={booking}
-                                        busy={busy}
-                                        onApprove={(data) =>
-                                          void act("approve", booking.id, data)
-                                        }
-                                      />
-                                      {(!booking.performance ||
-                                        missing > 0) && (
-                                        <p className="fine">
-                                          Complete the registrations and
-                                          schedule before signing.
-                                        </p>
-                                      )}
-                                    </details>
-                                  )}
-                                  {approved && (
-                                    <p className="fine night-contract-status">
-                                      Company signed
-                                      {booking.approvedBy &&
-                                        ` by ${booking.approvedBy}`}{" "}
-                                      ·{" "}
-                                      {
-                                        booking.members.filter((m) => m.signed)
-                                          .length
-                                      }
-                                      /{booking.members.length} artist
-                                      signatures
-                                    </p>
-                                  )}
+                                  <p className="fine night-contract-status">
+                                    {booking.contractStatus}
+                                  </p>
                                   <label className="check night-confirm">
                                     <input
                                       type="checkbox"
@@ -1244,97 +1285,6 @@ function Schedule({ booking }: { booking: Booking }) {
   );
 }
 
-function CompanyApproval({
-  booking,
-  busy,
-  onApprove,
-}: {
-  booking: View;
-  busy: boolean;
-  onApprove: (data: {
-    signer: FormDataEntryValue;
-    accepted: boolean;
-    fee: number;
-    dueOn: FormDataEntryValue;
-    returnBy: FormDataEntryValue;
-  }) => void;
-}) {
-  return (
-    <form
-      className="booking-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const fields = Object.fromEntries(new FormData(e.currentTarget));
-        onApprove({
-          signer: fields.signer,
-          accepted: true,
-          fee: Math.round(Number(fields.fee) * 100),
-          dueOn: fields.dueOn,
-          returnBy: fields.returnBy,
-        });
-      }}
-    >
-      <h3>Confirm agreement</h3>
-      <p className="fine">
-        <a href={dmfTemplate.url} target="_blank" rel="noreferrer">
-          Read the DMF standard contract
-        </a>
-      </p>
-      <div className="grid">
-        <label>
-          Fee per musician (DKK)
-          <input
-            key={booking.fee}
-            name="fee"
-            type="number"
-            min="0.01"
-            step="0.01"
-            required
-            defaultValue={booking.fee / 100 || ""}
-          />
-        </label>
-        <label>
-          Payment due
-          <input
-            name="dueOn"
-            type="date"
-            required
-            defaultValue={booking.dueOn}
-          />
-        </label>
-      </div>
-      <label>
-        Signing deadline
-        <input
-          name="returnBy"
-          type="date"
-          required
-          min={today()}
-          defaultValue={signingDeadline(booking.date)}
-        />
-      </label>
-      <label>
-        Company signer’s full name
-        <input name="signer" required minLength={2} maxLength={300} />
-      </label>
-      <label className="check">
-        <input type="checkbox" required />I approve the lineup, schedule, fees
-        and DMF terms and sign for the company.
-      </label>
-      <button
-        disabled={
-          busy ||
-          Boolean(booking.sourceError) ||
-          !booking.performance ||
-          booking.members.length !== booking.expectedMembers
-        }
-      >
-        Confirm, sign and send contracts
-      </button>
-    </form>
-  );
-}
-
 function BookingChecklist({ booking }: { booking: View }) {
   const registered = booking.members.length;
   const signed = booking.members.filter((m) => m.signed).length;
@@ -1350,7 +1300,7 @@ function BookingChecklist({ booking }: { booking: View }) {
         : registered !== booking.expectedMembers
           ? "Share the musician registration link"
           : !company
-            ? "Sign for the venue and send the contracts"
+            ? "Sign for the venue from the Bookings sheet"
             : signed < registered
               ? "Follow up on unsigned contracts"
               : recorded < registered
@@ -1362,6 +1312,9 @@ function BookingChecklist({ booking }: { booking: View }) {
                     : "Complete";
   return (
     <div className="booking-progress">
+      <p>
+        <strong>{booking.contractStatus}</strong>
+      </p>
       <ul className="booking-checklist">
         <li>
           <span>Schedule</span>

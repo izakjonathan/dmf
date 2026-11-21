@@ -53,7 +53,15 @@ export const artistPerformanceSchema = z
   .refine(
     (value) => value.start !== value.end,
     "Enter different start and end times.",
-  );
+  )
+  .refine((value) => {
+    const minutes = (clock: string) =>
+      Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3));
+    const slot = (minutes(value.end) - minutes(value.start) + 1440) % 1440;
+    return (
+      value.start === value.end || value.sets * value.minutesPerSet <= slot
+    );
+  }, "The sets must fit between the start and end times.");
 export type ArtistPerformance = z.infer<typeof artistPerformanceSchema>;
 
 export const musicianSchema = z
@@ -83,8 +91,12 @@ export const musicianSchema = z
     }
     if (value.payee === "Business" && !value.cvr)
       issue("cvr", "Enter the business CVR.");
-    if (value.preferredPaymentType === "Mobilepay" && !value.phone)
-      issue("phone", "Enter your Mobilepay phone number.");
+    if (
+      value.preferredPaymentType === "Mobilepay" &&
+      (!/^\+?[\d() .-]+$/.test(value.phone) ||
+        !/^\d{8,15}$/.test(value.phone.replace(/\D/g, "")))
+    )
+      issue("phone", "Enter a valid MobilePay phone number.");
     if (
       (value.preferredPaymentType === "Cash" ||
         value.preferredPaymentType === "Mobilepay") &&
@@ -192,6 +204,7 @@ export type Musician = Omit<z.infer<typeof musicianSchema>, "iban"> & {
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;
+  mergedInto?: string;
 };
 export type Payment = z.infer<typeof paymentSchema> & {
   name: string;
@@ -276,6 +289,21 @@ export function isoWeek(date: string) {
 export function tariff(date: string) {
   if (date < "2026-04-01") return 0;
   return date >= "2027-04-01" ? 320000 : 315000;
+}
+export function hasOtherPaymentPath(
+  state: Workspace,
+  value: Pick<Payment, "musicianId" | "performedOn" | "band">,
+  manual: boolean,
+) {
+  return state.payments.some(
+    (p) =>
+      !p.voidReason &&
+      p.kind === "Payment" &&
+      Boolean(p.bookingId) === manual &&
+      p.musicianId === value.musicianId &&
+      p.performedOn === value.performedOn &&
+      bandKey(p.band) === bandKey(value.band),
+  );
 }
 export function paymentRecord(state: Workspace, input: unknown) {
   const payment = paymentSchema.parse(input);
@@ -371,8 +399,10 @@ export function updateMusician(
     return "This musician was updated elsewhere. Close and reopen their details.";
   if (
     state.musicians.some(
-      ({ id, email }) =>
-        id !== input.id && email.toLowerCase() === input.profile.email,
+      ({ id, email, mergedInto }) =>
+        !mergedInto &&
+        id !== input.id &&
+        email.toLowerCase() === input.profile.email,
     )
   )
     return "That email is already registered to another musician.";
@@ -394,6 +424,8 @@ export function setMusicianDeleted(
 ) {
   const musician = state.musicians.find((item) => item.id === input.id);
   if (!musician) return "Musician not found.";
+  if (musician.mergedInto)
+    return "This profile was merged into another musician.";
   if (Boolean(musician.deletedAt) === deleted) return null;
   if (musician.updatedAt !== input.updatedAt)
     return "This musician was updated elsewhere. Close and reopen their details.";
@@ -412,6 +444,61 @@ export function setMusicianDeleted(
   return null;
 }
 
+export function mergeMusicians(
+  state: Workspace,
+  input: { from: string; into: string; updatedAt: string; email: string },
+) {
+  const from = state.musicians.find((m) => m.id === input.from && !m.deletedAt);
+  const into = state.musicians.find((m) => m.id === input.into && !m.deletedAt);
+  if (
+    !from ||
+    !into ||
+    from.id === into.id ||
+    from.updatedAt !== input.updatedAt ||
+    from.email.toLowerCase() !== input.email ||
+    into.email.toLowerCase() !== input.email
+  )
+    return "These profiles changed or use different emails. Refresh and review both entries.";
+  if (
+    state.bookings?.some(
+      (b) =>
+        b.members.some((m) => m.musicianId === from.id) &&
+        b.members.some((m) => m.musicianId === into.id),
+    )
+  )
+    return "Both profiles appear in the same booking. Correct that roster before merging.";
+  for (const booking of state.bookings || [])
+    for (const member of booking.members) {
+      if (member.musicianId !== from.id) continue;
+      const {
+        registration,
+        account,
+        iban,
+        phone,
+        payee,
+        cvr,
+        name,
+        email,
+        address,
+        band,
+      } = from;
+      member.payout ??= { registration, account, iban, phone, payee, cvr };
+      member.performer ??= { name, email, address, phone, band, cvr, payee };
+      member.musicianId = into.id;
+    }
+  for (const payment of state.payments)
+    if (payment.musicianId === from.id) payment.musicianId = into.id;
+  for (const invite of state.invites)
+    if (invite.musicianId === from.id && !invite.signedAt) {
+      if (invite.offer) invite.musicianId = into.id;
+      else invite.revoked = true;
+    }
+  from.deletedAt = new Date().toISOString();
+  from.updatedAt = from.deletedAt;
+  from.mergedInto = into.id;
+  into.updatedAt = from.deletedAt;
+  return null;
+}
 export function clientWorkspace(state: Workspace) {
   const publicMusicians = state.musicians.map(
     ({ cpr, registration, account, iban, ...musician }) => musician,
@@ -431,8 +518,8 @@ export function clientWorkspace(state: Workspace) {
       date: contract.offer.performanceDate,
     })),
     musicians: publicMusicians.filter((musician) => !musician.deletedAt),
-    deletedMusicians: publicMusicians.filter((musician) =>
-      Boolean(musician.deletedAt),
+    deletedMusicians: publicMusicians.filter(
+      (musician) => Boolean(musician.deletedAt) && !musician.mergedInto,
     ),
   };
 }

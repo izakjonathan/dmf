@@ -6,15 +6,22 @@ The first 18 columns match the venue's original booking sheet. The active Stageb
 
 1. Replace the Apps Script editor contents with `public/Code.gs` and save.
 2. Update the existing web-app deployment using **Manage deployments → Edit → New version → Deploy**. Keep its existing URL, API secret and workbook binding.
-3. Run `upgradeBookingSheet` only if the active tab still uses the legacy header `Performance date`. The current layout starts with `Dato`.
+3. Reload the workbook in a desktop browser. **Stagebook → Review, sign and send contracts** appears in the menu bar. The workbook owner may be asked to authorize the new menu action on first use. Run `upgradeBookingSheet` only if the active tab still starts with the legacy header `Performance date`.
+4. In Stagebook, open **Contracts → Check email setup** to verify the deployed adapter version, trigger status and mail quota.
 
 The upgrade takes the workbook lock, reads the latest active rows, carries over staff fields from the prepared tab, and retains the original tab as a timestamped backup. It preserves booking IDs and existing invitation links. It does not send emails or mark any payments as processed. Existing on-edit and scheduled triggers continue to work. Running the upgrade again is safe. Do not manually rename or rearrange the active tab before upgrading.
+
+## Confirm, sign and send before the gig
+
+Select a single row on **Bookings**. Once the schedule, fee and all registrations are complete, open **Stagebook → Review, sign and send contracts**. Review the terms, enter the venue signer's full name and choose **OK**. Closing the dialog makes no change. The menu requires the workbook owner's Google account. The artist emails each contain their own signature link. Column X tracks the contract status, and Stagebook shows individual email and signature status.
+
+Attendance is a separate step. It stays in the Stagebook night view, and booking payments require a signed agreement and confirmed attendance. If the row or agreement changes during review, reopen it before signing.
 
 ## In Stagebook
 
 - The booking contact completes the schedule and forwards the musician link. Each performer can register directly. Returning musicians can request a private link to reuse saved details.
 - In **Bookings → Manage bookings**, open the date and use **Staff access for this night**. The link is scoped to that date, can be replaced or revoked, and belongs to the named staff member.
-- Record who performed on the night. The company can sign before or afterwards. Check the booking checklist and reissue expired unsigned agreements as needed.
+- Record who performed on the night. Check the booking checklist and reissue expired or revoked unsigned agreements as needed.
 - In **Payments**, use the grouped queue and verify the selected musicians before recording money already transferred or paid out.
 
 ## Columns
@@ -44,7 +51,7 @@ The upgrade takes the workbook lock, reads the latest active rows, carries over 
 | U | Payment due | Optional venue input; defaults to the next weekday after the performance. |
 | V | Cancelled | Optional venue input, Yes or No. |
 | W | Booking ID | Managed by Stagebook. Never change or copy to create a new booking. |
-| X | Status | Managed by Stagebook. |
+| X | Status | Contract status for the booking. |
 | Y | Registration link | Managed by Stagebook. |
 | Z | Registration progress | Managed by Stagebook. |
 | AA | Email status | Managed by Stagebook. |

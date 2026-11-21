@@ -29,6 +29,7 @@ import { BankFields } from "./BankFields";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
 
 const emailChecks: Record<string, string> = {
+  quota: "No email quota remains today. The queue will retry.",
   connected:
     "The deployed script reached Google MailApp. You can retry a signing email.",
   permission:
@@ -127,6 +128,10 @@ export default function Dashboard() {
   const [emailCheck, setEmailCheck] = useState<{
     mail: string;
     deployment?: string;
+    version?: string;
+    scheduled?: boolean;
+    onEdit?: boolean;
+    quota?: number | null;
   }>();
   const [emailChecking, setEmailChecking] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -677,6 +682,16 @@ export default function Dashboard() {
               {emailCheck && (
                 <p role="status" className="fine">
                   {emailChecks[emailCheck.mail] || emailChecks.unavailable}
+                  {emailCheck.version && (
+                    <>
+                      {" "}
+                      Adapter {emailCheck.version}. Scheduled sync{" "}
+                      {emailCheck.scheduled ? "on" : "off"}. Sheet-edit trigger{" "}
+                      {emailCheck.onEdit ? "on" : "off"}.
+                      {emailCheck.quota != null &&
+                        ` Remaining email recipients today: ${emailCheck.quota}.`}
+                    </>
+                  )}
                   {emailCheck.deployment && (
                     <>
                       {" "}
@@ -698,7 +713,7 @@ export default function Dashboard() {
                 </label>
               )}
               {data.invites
-                .filter((invite) => invite.paymentId)
+                .filter((invite) => invite.paymentId || invite.bookingId)
                 .map((invite) => {
                   const active =
                     !invite.revoked &&
@@ -715,7 +730,7 @@ export default function Dashboard() {
                             : !active
                               ? "Expired"
                               : invite.emailSentAt
-                                ? "Email sent"
+                                ? "Sent by Google"
                                 : "Email unconfirmed"}
                       </span>
                       {active && (
@@ -752,13 +767,15 @@ export default function Dashboard() {
                     </div>
                   );
                 })}
-              {!data.invites.some((invite) => invite.paymentId) && (
-                <p>No signing requests yet.</p>
-              )}
+              {!data.invites.some(
+                (invite) => invite.paymentId || invite.bookingId,
+              ) && <p>No signing requests yet.</p>}
               <h2>Registration links</h2>
-              {data.invites.some((invite) => !invite.paymentId) ? (
+              {data.invites.some(
+                (invite) => !invite.paymentId && !invite.bookingId,
+              ) ? (
                 data.invites
-                  .filter((invite) => !invite.paymentId)
+                  .filter((invite) => !invite.paymentId && !invite.bookingId)
                   .map((invite) => (
                     <div className="invite-row" key={invite.id}>
                       <span>
@@ -872,30 +889,88 @@ export default function Dashboard() {
               />
             )}
             {modal.kind === "musician" && (
-              <MusicianEditor
-                profile={modal.profile}
-                collectCpr={modal.collectCpr}
-                busy={busy}
-                remove={() =>
-                  void mutate("deleteMusician", {
-                    id: modal.profile.id,
-                    updatedAt: modal.profile.updatedAt,
-                  })
-                }
-                restore={() =>
-                  void mutate("restoreMusician", {
-                    id: modal.profile.id,
-                    updatedAt: modal.profile.updatedAt,
-                  })
-                }
-                save={(profile) =>
-                  void mutate("musician", {
-                    id: modal.profile.id,
-                    updatedAt: modal.profile.updatedAt,
-                    profile,
-                  })
-                }
-              />
+              <>
+                <MusicianEditor
+                  profile={modal.profile}
+                  collectCpr={modal.collectCpr}
+                  busy={busy}
+                  remove={() =>
+                    void mutate("deleteMusician", {
+                      id: modal.profile.id,
+                      updatedAt: modal.profile.updatedAt,
+                    })
+                  }
+                  restore={() =>
+                    void mutate("restoreMusician", {
+                      id: modal.profile.id,
+                      updatedAt: modal.profile.updatedAt,
+                    })
+                  }
+                  save={(profile) =>
+                    void mutate("musician", {
+                      id: modal.profile.id,
+                      updatedAt: modal.profile.updatedAt,
+                      profile,
+                    })
+                  }
+                />
+                {!modal.profile.deletedAt &&
+                  data.musicians.some(
+                    (m) =>
+                      m.id !== modal.profile.id &&
+                      m.email.toLowerCase() ===
+                        modal.profile.email.toLowerCase(),
+                  ) && (
+                    <details className="booking-form">
+                      <summary>Merge duplicate musician profile</summary>
+                      <form
+                        onSubmit={(event) => {
+                          const input = fields(event);
+                          void mutate("mergeMusicians", {
+                            from: modal.profile.id,
+                            into: input.into,
+                            email: input.email,
+                            updatedAt: modal.profile.updatedAt,
+                          });
+                        }}
+                      >
+                        <p className="fine">
+                          Confirm both profiles belong to the same person.
+                          Payments will report under the profile you keep.
+                          Signed agreements stay in the archive.
+                        </p>
+                        <label>
+                          Profile to keep
+                          <select name="into" required defaultValue="">
+                            <option value="" disabled>
+                              Choose a profile
+                            </option>
+                            {data.musicians
+                              .filter(
+                                (m) =>
+                                  m.id !== modal.profile.id &&
+                                  m.email.toLowerCase() ===
+                                    modal.profile.email.toLowerCase(),
+                              )
+                              .map((m) => (
+                                <option value={m.id} key={m.id}>
+                                  {m.name} · {m.band || "No band"} ·{" "}
+                                  {m.createdAt.slice(0, 10)}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                        <label>
+                          Confirm the shared email
+                          <input type="email" name="email" required />
+                        </label>
+                        <button className="secondary" disabled={busy}>
+                          Merge profile into selected profile
+                        </button>
+                      </form>
+                    </details>
+                  )}
+              </>
             )}
             {modal.kind === "void" && (
               <form

@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import {
   approveBooking,
+  bookingContractStatus,
+  reopenBooking,
   confirmBooking,
   markBookingsPaid,
   pendingReason,
@@ -331,7 +333,7 @@ test("booking email reservations prevent duplicate sends after a failed status s
     {
       id: "invitation:" + booking.id,
       bookingId: booking.id,
-      to: "band@example.com",
+      to: booking.contactEmail,
       kind: "invitation",
       status: "pending",
       createdAt: new Date(Date.now() - 120000).toISOString(),
@@ -379,7 +381,7 @@ test("an unknown mail outcome is held for manual follow-up instead of sent twice
     {
       id: "invitation:" + booking.id,
       bookingId: booking.id,
-      to: "band@example.com",
+      to: booking.contactEmail,
       kind: "invitation",
       status: "pending",
       createdAt: new Date(Date.now() - 120000).toISOString(),
@@ -777,7 +779,9 @@ test("payment completion comes only from real recorded payments and projection n
   runInNewContext(script + "\nrefreshBookingProjection(book,state);", f);
   assert.equal(row[1], true);
   assert.equal(row[8], 0);
-  assert.ok([...f.outputs.keys()].every((col) => [2, 6, 9, 11].includes(col)));
+  assert.ok(
+    [...f.outputs.keys()].every((col) => [2, 6, 9, 11, 24, 26].includes(col)),
+  );
   state.payments.find(
     (p) => p.id === booking.members[0].paymentId,
   )!.voidReason = "Reversed";
@@ -908,4 +912,104 @@ test("upgrade keeps the original tab, refreshes legacy values and retains staff 
   assert.equal(staged.data[1][11], "Bertil");
   assert.equal(staged.data[1][15], true);
   assert.equal(staged.data[2][2], "Another act");
+});
+
+test("sheet approval guard rejects live row changes, reordered columns and duplicate IDs", () => {
+  const { state, booking } = fixture();
+  const row = Array(28).fill("");
+  row[0] = booking.date;
+  row[2] = booking.act;
+  row[9] = booking.contactEmail;
+  row[18] = booking.fee / 100;
+  row[20] = booking.dueOn;
+  row[22] = booking.id;
+  const rows = [row];
+  let headerChanged = false;
+  const context: any = {
+    state,
+    row,
+    id: booking.id,
+    header: [],
+    book: {
+      getSpreadsheetTimeZone: () => "Europe/Copenhagen",
+      getSheetByName: () => ({
+        getLastRow: () => rows.length + 1,
+        getRange: (r: string | number) => ({
+          getValue: () => "Dato",
+          getValues: () =>
+            r === 1
+              ? [headerChanged ? ["Dato", "invalid"] : context.header]
+              : rows,
+        }),
+      }),
+    },
+  };
+  runInNewContext(
+    script +
+      '\nheader = BOOKING_OPERATIONS_HEADERS; state.bookings[0].sourceSignature = JSON.stringify(bookingInput(bookingInputRow(row,true),"Europe/Copenhagen",state.bookings[0],true));',
+    context,
+  );
+  const matches = () =>
+    runInNewContext(script + "\nsheetBookingMatches(book,state,id)", { ...context });
+  assert.equal(matches(), true);
+  row[4] = 200;
+  assert.equal(matches(), true);
+  row[18] = 123;
+  assert.equal(matches(), false);
+  row[18] = booking.fee / 100;
+  rows.push([...row]);
+  assert.equal(matches(), false);
+  rows.pop();
+  headerChanged = true;
+  assert.equal(matches(), false);
+});
+
+test("booking corrections retain completed attendance and archive prior signatures", () => {
+  const { state, booking } = fixture();
+  approve(state, booking);
+  sign(state, booking);
+  confirmBooking(state, booking.id, {
+    by: "Staff Person",
+    note: "",
+    members: booking.members.map((m) => ({ id: m.id, status: "played" })),
+  });
+  assert.equal(bookingContractStatus(state, booking), "All contracts signed");
+  reopenBooking(state, booking.id, {
+    memberId: booking.members[1].id,
+    reason: "Incorrect performer in roster",
+  });
+  assert.equal(booking.members[0].attendance, "played");
+  assert.equal(booking.confirmedBy, "Staff Person");
+  assert.equal(state.contracts?.length, 2);
+  assert.equal(
+    bookingContractStatus(state, booking),
+    "Waiting for booking details",
+  );
+});
+
+test("payment gate and sheet projection agree when the booking needs reconciliation", () => {
+  const { state, booking } = fixture();
+  approve(state, booking);
+  sign(state, booking);
+  confirmBooking(state, booking.id, {
+    by: "Staff Person",
+    members: booking.members.map((m) => ({ id: m.id, status: "played" })),
+  });
+  const member = booking.members[0];
+  const exportStatus = () =>
+    runInNewContext(script + '\nrowsFor(state)["Booking payments"][1][8]', {
+      state,
+    });
+  booking.sourceError = "Incomplete row";
+  assert.equal(exportStatus(), pendingReason(state, booking, member));
+  delete booking.sourceError;
+  state.payments.push({
+    ...state.payments[0],
+    kind: "Payment",
+    musicianId: member.musicianId,
+    band: booking.act,
+    performedOn: booking.date,
+  });
+  assert.equal(exportStatus(), "Manual payment needs reconciliation");
+  assert.equal(exportStatus(), pendingReason(state, booking, member));
 });

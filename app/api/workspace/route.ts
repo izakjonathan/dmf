@@ -27,6 +27,8 @@ import {
   paymentRecords,
   today,
   updateMusician,
+  hasOtherPaymentPath,
+  mergeMusicians,
   venueSchema,
   type Invite,
   type Workspace,
@@ -94,6 +96,8 @@ function activePaymentInvite(state: Workspace, id: string) {
       booking.approvedVersion !== booking.version ||
       invite.bookingVersion !== booking.version ||
       invite.signedAt ||
+      !invite.offer ||
+      invite.offer.returnBy < today() ||
       invite.revoked
     )
       throw new RequestError("This signing link is no longer active.", 409);
@@ -136,6 +140,19 @@ const request = z.discriminatedUnion("action", [
   z.object({ action: z.literal("venue"), data: venueSchema }),
   z.object({ action: z.literal("payment"), data: z.unknown() }),
   z.object({ action: z.literal("musician"), data: musicianEditSchema }),
+  z.object({
+    action: z.literal("mergeMusicians"),
+    data: z.object({
+      from: z.string().uuid(),
+      into: z.string().uuid(),
+      updatedAt: z.string(),
+      email: z
+        .string()
+        .trim()
+        .email()
+        .transform((value) => value.toLowerCase()),
+    }),
+  }),
   z.object({ action: z.literal("deleteMusician"), data: musicianStatusSchema }),
   z.object({
     action: z.literal("restoreMusician"),
@@ -179,6 +196,20 @@ export async function POST(req: Request) {
           if (error instanceof z.ZodError) throw error;
           throw new RequestError((error as Error).message);
         }
+        if (payments.some((payment) => payment.paidOn > today()))
+          throw new RequestError(
+            "The actual payment date cannot be in the future.",
+          );
+        if (
+          payments.some(
+            (payment) =>
+              payment.kind === "Payment" &&
+              hasOtherPaymentPath(state, payment, true),
+          )
+        )
+          throw new RequestError(
+            "A booking payment already exists for this musician and performance. Use the booking payment record.",
+          );
         const { contract } = z
           .object({ contract: paymentContractSchema.optional() })
           .parse(input.data);
@@ -258,6 +289,11 @@ export async function POST(req: Request) {
           input.data,
           input.action === "deleteMusician",
         );
+        if (error) throw new RequestError(error, 409);
+        break;
+      }
+      case "mergeMusicians": {
+        const error = mergeMusicians(state, input.data);
         if (error) throw new RequestError(error, 409);
         break;
       }

@@ -119,6 +119,11 @@ export async function POST(req: Request, context: Context) {
     const booking = findBooking(state, raw);
     const body = await req.json();
     if (body.action === "verify") {
+      if (booking.approvedVersion === booking.version)
+        throw new RequestError(
+          "This booking is approved. Contact the venue for a correction.",
+          409,
+        );
       const email = emailSchema.parse(body.email);
       const now = Date.now();
       const recent = (state.bookingMail || []).filter(
@@ -147,8 +152,9 @@ export async function POST(req: Request, context: Context) {
         expiresAt: new Date(now + 30 * 60000).toISOString(),
       });
       state.bookingMail ??= [];
+      const verificationMailId = "verify:" + crypto.randomUUID();
       state.bookingMail.push({
-        id: "verify:" + crypto.randomUUID(),
+        id: verificationMailId,
         bookingId: booking.id,
         kind: "verification",
         to: email,
@@ -169,7 +175,15 @@ export async function POST(req: Request, context: Context) {
       await writeState(state);
       try {
         const result = await dispatchBookingMail();
-        if (result.delivery?.failed)
+        const mail = result.state.bookingMail?.find(
+          (m: { id: string }) => m.id === verificationMailId,
+        );
+        if (mail?.status === "failed" || mail?.status === "uncertain")
+          return json({
+            message:
+              "Google could not confirm your verification email. Try again shortly or contact the venue.",
+          });
+        if (mail?.status !== "sent")
           return json({
             message:
               "Your verification email is queued. If it does not arrive, contact the venue.",
@@ -219,10 +233,13 @@ export async function POST(req: Request, context: Context) {
         .positive()
         .max(100000000)
         .parse(body.fee);
+      const source = booking.sourceSignature
+        ? JSON.parse(booking.sourceSignature)
+        : null;
       Object.assign(booking, {
         performance,
         expectedMembers: expected,
-        fee: proposedFee,
+        fee: source?.fee > 0 ? source.fee : proposedFee,
       });
     } else if (body.action === "register") {
       const input = musicianSchema.parse(body.profile);
@@ -237,10 +254,12 @@ export async function POST(req: Request, context: Context) {
       // overwrite a previously saved musician's private/payment information.
       const member = booking.members.find((m) => m.email === input.email);
       const existing = proof
-        ? state.musicians.find((m) => m.id === member?.musicianId) ||
-          state.musicians.find(
-            (m) => m.email.toLowerCase() === proof.email && !m.deletedAt,
-          )
+        ? state.musicians.find(
+            (m) =>
+              m.email.toLowerCase() === proof.email &&
+              !m.deletedAt &&
+              m.id !== member?.musicianId,
+          ) || state.musicians.find((m) => m.id === member?.musicianId)
         : undefined;
       if (member && !proof)
         throw new RequestError(

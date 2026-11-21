@@ -20,7 +20,9 @@ import {
   approveBooking,
   contactBookingId,
   reissueBookingContract,
+  reopenBooking,
   bookingOverview,
+  bookingContractStatus,
   isCurrentBookingMail,
   confirmBooking,
   markBookingsPaid,
@@ -76,11 +78,14 @@ function nightResponse(
         confirmedAt: b.confirmedAt,
         confirmedBy: b.confirmedBy,
         attendanceNote: b.attendanceNote,
-        attendanceLocked: b.members.some((m) => m.paymentId),
+        attendanceLocked:
+          b.members.length > 0 && b.members.every((m) => m.paymentId),
+        contractStatus: bookingContractStatus(state, b),
         members: b.members.map((m) => ({
           id: m.id,
           name: m.name,
           attendance: m.attendance,
+          attendanceLocked: Boolean(m.paymentId),
         })),
       })),
   };
@@ -130,7 +135,9 @@ const actionSchema = z.object({
     "link",
     "signingLink",
     "retry",
+    "resendInvitation",
     "reissue",
+    "correctBooking",
     "staffLink",
     "revokeStaff",
   ]),
@@ -233,6 +240,10 @@ export async function POST(req: Request) {
       if (!input.id) throw Error("Choose a booking.");
       approveBooking(state, input.id, input.data, signing);
     }
+    if (input.action === "correctBooking") {
+      if (!input.id) throw new RequestError("Choose a booking.");
+      reopenBooking(state, input.id, input.data);
+    }
     if (input.action === "reissue") {
       const value = z
         .object({ memberId: z.string().uuid(), returnBy: date })
@@ -274,6 +285,55 @@ export async function POST(req: Request) {
       confirmBooking(state, input.id, input.data);
     }
     if (input.action === "paid") markBookingsPaid(state, input.data);
+    if (input.action === "resendInvitation") {
+      const booking = state.bookings?.find(
+        (b) => b.id === input.id && !b.cancelled && !b.sourceError,
+      );
+      if (!booking || booking.approvedVersion === booking.version)
+        throw new RequestError(
+          "Choose an open booking with a current contact.",
+          409,
+        );
+      const entries = (state.bookingMail ??= []);
+      const previous = entries
+        .filter(
+          (m) =>
+            m.bookingId === booking.id &&
+            m.kind === "invitation" &&
+            m.to === booking.contactEmail,
+        )
+        .at(-1);
+      if (previous && Date.now() - Date.parse(previous.createdAt) < 60000)
+        throw new RequestError(
+          "Wait one minute before resending the invitation.",
+          429,
+        );
+      for (const mail of entries)
+        if (
+          mail.bookingId === booking.id &&
+          mail.kind === "invitation" &&
+          mail.status === "pending"
+        )
+          mail.status = "superseded";
+      const root = "https://dmf-eta.vercel.app/b/";
+      entries.push({
+        id: "invitation:" + crypto.randomUUID(),
+        bookingId: booking.id,
+        sourceVersion: booking.sourceVersion || 1,
+        to: booking.contactEmail,
+        kind: "invitation",
+        status: "pending",
+        createdAt: new Date().toISOString(),
+        subject: "Booking invitation · " + booking.act + " · " + booking.date,
+        body:
+          "Complete the schedule using your private contact link:\n" +
+          root +
+          bookingToken(contactBookingId(booking)) +
+          "\n\nForward this registration form to every musician:\n" +
+          root +
+          bookingToken(booking.id),
+      });
+    }
     if (input.action === "retry") {
       const mailId = z.object({ mailId: z.string() }).parse(input.data).mailId;
       const mail = state.bookingMail?.find(
@@ -284,6 +344,7 @@ export async function POST(req: Request) {
         !mail ||
         mail.status !== "failed" ||
         !booking ||
+        mail.kind === "verification" ||
         !isCurrentBookingMail(mail, booking)
       )
         throw Error(

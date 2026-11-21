@@ -5,6 +5,7 @@ import {
   dmfTemplate,
   money,
   paymentRecord,
+  hasOtherPaymentPath,
   today,
   venueSchema,
   type ArtistPerformance,
@@ -47,6 +48,7 @@ export type Booking = {
   confirmedAt?: string;
   confirmedBy?: string;
   attendanceNote?: string;
+  correction?: { reason: string; at: string };
   inviteSentAt?: string;
   reminderAt?: string;
   sourceError?: string;
@@ -73,7 +75,13 @@ export type BookingMail = {
   to: string;
   subject: string;
   body: string;
-  kind: "invitation" | "verification" | "contract" | "reminder" | "approval";
+  kind:
+    | "invitation"
+    | "verification"
+    | "contract"
+    | "reminder"
+    | "approval"
+    | "receipt";
   status: "pending" | "sent" | "failed" | "uncertain" | "superseded";
   createdAt: string;
   sentAt?: string;
@@ -124,6 +132,18 @@ export function pendingReason(
   if (!booking.confirmedAt) return "Performance confirmation needed";
   if (!member.attendance) return "Attendance not recorded";
   if (member.attendance !== "played") return "Performance issue";
+  if (
+    hasOtherPaymentPath(
+      state,
+      {
+        musicianId: member.musicianId,
+        performedOn: booking.date,
+        band: booking.act,
+      },
+      false,
+    )
+  )
+    return "Manual payment needs reconciliation";
   return "Ready to pay";
 }
 export const approvalSchema = z.object({
@@ -259,7 +279,7 @@ export function reissueBookingContract(
     throw Error("Approve the current booking before reissuing a contract.");
   const member = booking.members.find((m) => m.id === memberId);
   const previous = state.invites.find(
-    (i) => i.id === member?.contractId && !i.revoked,
+    (i) => i.id === member?.contractId && i.bookingVersion === booking.version,
   );
   if (!member || !previous?.offer || previous.signedAt || member.paymentId)
     throw Error("Only unsigned contracts can be reissued.");
@@ -304,6 +324,41 @@ export function reissueBookingContract(
     createdAt: at,
   });
 }
+export function reopenBooking(state: Workspace, id: string, input: unknown) {
+  const booking = activeBooking(state, id);
+  if (booking.members.some((member) => member.paymentId))
+    throw Error(
+      "This booking already has a recorded payment. Reconcile payments before changing the agreement.",
+    );
+  const { memberId, reason } = z
+    .object({
+      memberId: z.string().uuid().optional(),
+      reason: z.string().trim().min(5).max(500),
+    })
+    .parse(input);
+  if (memberId && !booking.members.some((member) => member.id === memberId))
+    throw Error("The roster changed. Refresh before editing it.");
+  if (memberId)
+    booking.members = booking.members.filter(
+      (member) => member.id !== memberId,
+    );
+  booking.version++;
+  booking.approvedVersion = undefined;
+  booking.approvedAt = undefined;
+  booking.approvedBy = undefined;
+  booking.correction = { reason, at: new Date().toISOString() };
+  for (const member of booking.members) member.contractId = undefined;
+  for (const invite of state.invites)
+    if (invite.bookingId === id && !invite.signedAt) invite.revoked = true;
+  for (const mail of state.bookingMail || [])
+    if (
+      mail.bookingId === id &&
+      (mail.kind === "contract" ||
+        (mail.kind === "reminder" && mail.memberId)) &&
+      mail.status !== "sent"
+    )
+      mail.status = "superseded";
+}
 export const attendanceSchema = z.object({
   by: z.string().trim().min(2).max(300),
   note: z.string().trim().max(2000).default(""),
@@ -319,8 +374,6 @@ export function confirmBooking(state: Workspace, id: string, input: unknown) {
   if (booking.date > today())
     throw Error("Confirm the performance on its date or afterwards.");
   if (booking.sourceError) throw Error(booking.sourceError);
-  if (booking.members.some((member) => member.paymentId))
-    throw Error("This booking already has processed payments.");
   const value = attendanceSchema.parse(input);
   const ids = new Set(value.members.map((m) => m.id));
   if (
@@ -337,6 +390,15 @@ export function confirmBooking(state: Workspace, id: string, input: unknown) {
     throw Error(
       "Describe the exception or note who performed without registering.",
     );
+  if (
+    booking.members.some(
+      (member) =>
+        member.paymentId &&
+        value.members.find((m) => m.id === member.id)?.status !==
+          member.attendance,
+    )
+  )
+    throw Error("Attendance for a paid musician cannot be changed.");
   for (const member of booking.members)
     member.attendance = value.members.find((m) => m.id === member.id)!.status;
   booking.confirmedAt = new Date().toISOString();
@@ -364,6 +426,10 @@ export function markBookingsPaid(state: Workspace, input: unknown) {
     if (seen.has(key)) throw Error("A musician was selected twice.");
     seen.add(key);
     const booking = activeBooking(state, item.bookingId);
+    if (value.paidOn < booking.date)
+      throw Error(
+        "The payment date cannot be before the performance. Record deposits separately.",
+      );
     const member = booking.members.find((m) => m.id === item.memberId);
     if (!member || pendingReason(state, booking, member) !== "Ready to pay")
       throw Error("A selected payment is no longer ready. Refresh the list.");
@@ -395,6 +461,9 @@ export function markBookingsPaid(state: Workspace, input: unknown) {
 export function isCurrentBookingMail(mail: BookingMail, booking: Booking) {
   return (
     mail.status !== "superseded" &&
+    ((mail.kind !== "invitation" &&
+      (mail.kind !== "reminder" || mail.memberId)) ||
+      mail.to === booking.contactEmail) &&
     (!mail.sourceVersion ||
       mail.sourceVersion === (booking.sourceVersion || 1)) &&
     !/^(Booking changed\.|Signature no longer needed\.|Agreement is no longer awaiting signature\.)/.test(
@@ -403,9 +472,31 @@ export function isCurrentBookingMail(mail: BookingMail, booking: Booking) {
   );
 }
 
+export function bookingContractStatus(state: Workspace, booking: Booking) {
+  if (booking.cancelled) return "Cancelled";
+  if (booking.sourceError) return "Booking sheet needs attention";
+  if (booking.approvedVersion !== booking.version && booking.performance && booking.members.length === booking.expectedMembers && !booking.fee) return "Fee needed";
+  if (booking.approvedVersion !== booking.version)
+    return booking.performance &&
+      booking.members.length === booking.expectedMembers
+      ? "Ready for company signature"
+      : "Waiting for booking details";
+  const signed = booking.members.filter((member) =>
+    state.contracts?.some(
+      (contract) =>
+        contract.id === member.contractId &&
+        contract.bookingVersion === booking.version,
+    ),
+  ).length;
+  return signed === booking.expectedMembers
+    ? "All contracts signed"
+    : `Company signed · ${signed}/${booking.expectedMembers} artists signed`;
+}
+
 export function bookingOverview(state: Workspace) {
   return (state.bookings || []).map((booking) => ({
     ...booking,
+    contractStatus: bookingContractStatus(state, booking),
     members: booking.members.map(
       ({ payout: _payout, performer: _performer, ...member }) => {
         const payment = state.payments.find(
@@ -416,8 +507,29 @@ export function bookingOverview(state: Workspace) {
             c.id === member.contractId && c.bookingVersion === booking.version,
         );
         const invite = state.invites.find(
-          (i) => i.id === member.contractId && !i.revoked,
+          (i) =>
+            i.id === member.contractId && i.bookingVersion === booking.version,
         );
+        const mail = state.bookingMail?.find(
+          (m) => m.id === "contract:" + invite?.id,
+        );
+        const signatureStatus = contract
+          ? "Signed"
+          : !invite
+            ? "Awaiting company signature"
+            : invite.revoked
+              ? "Revoked"
+              : invite.offer && invite.offer.returnBy < today()
+                ? "Expired"
+                : mail?.status === "failed"
+                  ? "Email failed"
+                  : mail?.status === "uncertain"
+                    ? "Send unconfirmed"
+                    : mail?.status === "sent"
+                      ? "Awaiting artist signature"
+                      : mail?.status === "pending" && mail.error
+                        ? "Email blocked"
+                        : "Email queued";
         return {
           ...member,
           status: pendingReason(state, booking, member),
@@ -428,17 +540,16 @@ export function bookingOverview(state: Workspace) {
             booking.paymentType,
           amount: payment?.amount ?? contract?.offer.fee ?? booking.fee,
           signed: Boolean(contract),
+          signatureStatus,
           signingDeadline: invite?.offer?.returnBy,
         };
       },
     ),
     mail: (state.bookingMail || [])
-      .filter(
-        (mail) => mail.bookingId === booking.id && mail.kind !== "verification",
-      )
+      .filter((mail) => mail.bookingId === booking.id)
       .map((mail) => ({
         id: mail.id,
-        to: mail.to,
+        to: mail.kind === "verification" ? "Musician" : mail.to,
         kind: mail.kind,
         status: isCurrentBookingMail(mail, booking)
           ? mail.status

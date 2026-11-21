@@ -1,5 +1,7 @@
 import {
   fail,
+  bookingToken,
+  equals,
   findInvite,
   json,
   readState,
@@ -36,7 +38,24 @@ function registrationOffer(invite: Invite) {
 export async function GET(_req: Request, context: Context) {
   try {
     const state = await readState();
-    const invite = findInvite(state, (await context.params).token);
+    const token = (await context.params).token;
+    if (new URL(_req.url).searchParams.has("receipt")) {
+      const contract =
+        /^[a-f0-9]{64}$/.test(token) &&
+        state.contracts?.find(
+          (item) =>
+            item.bookingId &&
+            Date.parse(item.performerSignedAt) + 365 * 86400000 > Date.now() &&
+            equals(bookingToken("receipt:" + item.id), token),
+        );
+      if (!contract)
+        throw new RequestError(
+          "This receipt link has expired. Ask the venue for a copy.",
+          404,
+        );
+      return json({ receipt: contract });
+    }
+    const invite = findInvite(state, token);
     if (invite.bookingId) {
       const booking = state.bookings?.find((b) => b.id === invite.bookingId);
       if (
@@ -141,6 +160,24 @@ export async function POST(req: Request, context: Context) {
       state.contracts.push(contract);
       if (performance) invite.offer = contract.offer;
       invite.signedAt = contract.performerSignedAt;
+      if (invite.bookingId) {
+        state.bookingMail ??= [];
+        state.bookingMail.push({
+          id: "receipt:" + contract.id,
+          bookingId: invite.bookingId,
+          memberId: invite.memberId,
+          to: contract.offer.performerEmail,
+          kind: "receipt",
+          status: "pending",
+          subject:
+            "Signed contract receipt · " + contract.offer.performanceDate,
+          body:
+            "Your signed agreement is available at the private link below. Keep it for your records. The link is valid for one year.\n\nhttps://dmf-eta.vercel.app/register/" +
+            bookingToken("receipt:" + contract.id) +
+            "?receipt=1",
+          createdAt: contract.performerSignedAt,
+        });
+      }
       await writeState(state);
       return json({ ok: true, contract });
     }
@@ -155,13 +192,15 @@ export async function POST(req: Request, context: Context) {
       );
     const index = state.musicians.findIndex((item) =>
       offer
-        ? item.email.toLowerCase() === input.email
+        ? !item.mergedInto && item.email.toLowerCase() === input.email
         : item.id === invite.musicianId,
     );
     if (
       state.musicians.some(
         (item, position) =>
-          item.email.toLowerCase() === input.email && position !== index,
+          !item.mergedInto &&
+          item.email.toLowerCase() === input.email &&
+          position !== index,
       )
     )
       throw new RequestError(

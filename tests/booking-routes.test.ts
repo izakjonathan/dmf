@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import ts from "typescript";
 import * as model from "../lib/model.ts";
 import * as bookingModel from "../lib/bookings.ts";
@@ -14,6 +14,8 @@ test("booking API completes registration, signatures, attendance and payment wit
   const bookingId = crypto.randomUUID();
   const bookingToken = "a".repeat(64);
   let administrator = true;
+  const secret = "synthetic-test-secret";
+  let sheetReady = true;
   state.bookings = [
     {
       id: bookingId,
@@ -50,7 +52,17 @@ test("booking API completes registration, signatures, attendance and payment wit
     equals: (a: string, b: string) => a === b,
     RequestError,
     readState: async () => structuredClone(state),
-    writeState: async (next: typeof state) => {
+    sheets: async (action: string, options: { id: string }) => {
+      assert.equal(action, "sheetBookingReview");
+      assert.equal(options.id, bookingId);
+      if (!sheetReady) throw new RequestError("Booking source changed", 409);
+      return { state: structuredClone(state) };
+    },
+    writeState: async (
+      next: typeof state,
+      options?: { sheetBookingId: string },
+    ) => {
+      if (options) assert.equal(options.sheetBookingId, bookingId);
       assert.equal(next.revision, state.revision);
       state = structuredClone({ ...next, revision: next.revision + 1 });
       return structuredClone(state);
@@ -95,6 +107,7 @@ test("booking API completes registration, signatures, attendance and payment wit
     runInNewContext(code, {
       exports,
       require: (name: string) => {
+        if (name === "node:crypto") return { createHmac };
         if (name === "@/lib/server") return server;
         if (name === "@/lib/model") return model;
         if (name === "@/lib/bookings") return bookingModel;
@@ -103,6 +116,7 @@ test("booking API completes registration, signatures, attendance and payment wit
         throw Error(name);
       },
       crypto,
+      process: { env: { GOOGLE_SCRIPT_SECRET: secret } },
       Buffer,
       URL,
       Date,
@@ -113,6 +127,23 @@ test("booking API completes registration, signatures, attendance and payment wit
   const { z: requireZod } = await import("zod");
   const artist = route("../app/api/bookings/[token]/route.ts");
   const owner = route("../app/api/bookings/route.ts");
+  const sheetApproval = route("../app/api/sheet-approval/route.ts");
+  const sheetPost = (action: string, extra = {}, valid = true) => {
+    const body = JSON.stringify({
+      action,
+      id: bookingId,
+      timestamp: Date.now(),
+      ...extra,
+    });
+    const signature = createHmac("sha256", secret)
+      .update("stagebook-sheet-approval:" + body)
+      .digest("hex");
+    return new Request("https://example.com/api/sheet-approval", {
+      method: "POST",
+      body,
+      headers: { "x-stagebook-signature": valid ? signature : "invalid" },
+    });
+  };
   const signing = route("../app/api/register/[token]/route.ts");
   const context = { params: Promise.resolve({ token: bookingToken }) };
   const post = (body: unknown, url = "https://example.com/api/bookings") =>
@@ -339,19 +370,39 @@ test("booking API completes registration, signatures, attendance and payment wit
     200,
   );
   assert.equal((await owner.GET(new Request(staffEndpoint))).status, 403);
-  const approved = await owner.POST(
-    post({
-      action: "approve",
-      id: bookingId,
-      data: {
-        signer: "Venue Owner",
-        accepted: true,
-        fee: 315000,
-        dueOn: model.today(),
-      },
-    }),
+  assert.equal(
+    (await sheetApproval.POST(sheetPost("review", {}, false))).status,
+    403,
   );
+  sheetReady = false;
+  assert.equal((await sheetApproval.POST(sheetPost("review"))).status, 409);
+  sheetReady = true;
+  const reviewResponse = await sheetApproval.POST(sheetPost("review"));
+  assert.equal(reviewResponse.status, 200);
+  const reviewed = await reviewResponse.json();
+  assert.equal(reviewed.members.length, 2);
+  assert.equal(reviewed.members[0].account, undefined);
+  const signingRequest = {
+    review: reviewed.review,
+    signer: "Venue Owner",
+    accepted: true,
+  };
+  state.bookings![0].fee++;
+  assert.equal(
+    (await sheetApproval.POST(sheetPost("sign", signingRequest))).status,
+    409,
+  );
+  state.bookings![0].fee--;
+  const approved = await sheetApproval.POST(sheetPost("sign", signingRequest));
   assert.equal(approved.status, 200);
+  assert.match((await approved.json()).message, /2 of 2/);
+  assert.equal(state.bookings![0].confirmedBy, "Night Employee");
+  const count = state.invites.length;
+  assert.equal(
+    (await sheetApproval.POST(sheetPost("sign", signingRequest))).status,
+    200,
+  );
+  assert.equal(state.invites.length, count);
   const historyCount = state.payments.length;
   const oldInvite = state.invites.find((i) => i.bookingId === bookingId)!;
   const reissued = await owner.POST(
@@ -392,6 +443,21 @@ test("booking API completes registration, signatures, attendance and payment wit
     const signed = await signing.POST(post(form), ctx);
     assert.equal(signed.status, 200);
     assert.equal((await signing.POST(post(form), ctx)).status, 409);
+    const receiptMail = state.bookingMail!.find(
+      (m) => m.id === "receipt:" + invite.id,
+    )!;
+    assert.equal(receiptMail.to, invite.offer!.performerEmail);
+    const receiptToken = receiptMail.body.match(/register\/([a-f0-9]{64})/)![1];
+    const receipt = await signing.GET(
+      new Request(
+        "https://example.com/register/" + receiptToken + "?receipt=1",
+      ),
+      {
+        params: Promise.resolve({ token: receiptToken }),
+      },
+    );
+    assert.equal(receipt.status, 200);
+    assert.equal((await receipt.json()).receipt.id, invite.id);
   }
   assert.equal(state.payments.length, historyCount);
   const members = state.bookings![0].members.map((m) => ({

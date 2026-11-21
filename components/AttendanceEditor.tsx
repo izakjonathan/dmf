@@ -8,7 +8,13 @@ export type AttendanceInput = {
 };
 type Act = {
   expectedMembers: number;
-  members: { id: string; name: string; attendance?: Attendance }[];
+  members: {
+    id: string;
+    name: string;
+    attendance?: Attendance;
+    attendanceLocked?: boolean;
+    paymentId?: string;
+  }[];
   attendanceNote?: string;
   confirmedAt?: string;
 };
@@ -41,7 +47,10 @@ export function AttendanceEditor({
             note: String(fields.get("note") || ""),
             members: booking.members.map((member) => ({
               id: member.id,
-              status: fields.get(member.id),
+              status:
+                member.attendanceLocked || member.paymentId
+                  ? member.attendance || null
+                  : fields.get(member.id),
             })),
           });
         }}
@@ -52,6 +61,7 @@ export function AttendanceEditor({
             <select
               name={member.id}
               defaultValue={member.attendance || ""}
+              disabled={Boolean(member.attendanceLocked || member.paymentId)}
               required
             >
               <option value="" disabled>

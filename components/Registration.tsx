@@ -84,11 +84,21 @@ export default function Registration({ token }: { token: string }) {
   useEffect(() => {
     if (demo) return;
     let active = true;
-    fetch("/api/register/" + encodeURIComponent(token))
+    const receipt = new URLSearchParams(location.search).has("receipt");
+    fetch(
+      "/api/register/" +
+        encodeURIComponent(token) +
+        (receipt ? "?receipt=1" : ""),
+    )
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw Error(data.error);
         if (active) {
+          if (data.receipt) {
+            setContract(data.receipt);
+            setSaved(true);
+            return;
+          }
           setDetails(data);
           setPayee(data.profile?.payee || "Individual");
         }
@@ -174,7 +184,13 @@ export default function Registration({ token }: { token: string }) {
             <Brand />
             {demo && <span className="eyebrow">Demo</span>}
           </header>
-          <h1>{details?.signingOnly ? "Sign contract" : "Musician details"}</h1>
+          <h1>
+            {saved && contract
+              ? "Signed contract"
+              : details?.signingOnly
+                ? "Sign contract"
+                : "Musician details"}
+          </h1>
           {details && <p className="lead">{details.venue.name}</p>}
         </div>
       </div>
@@ -184,7 +200,7 @@ export default function Registration({ token }: { token: string }) {
             {error}
           </p>
         )}
-        {!details && !error && <p>Opening registration…</p>}
+        {!details && !saved && !error && <p>Opening registration…</p>}
         {saved && (
           <div className="panel">
             {demo && (

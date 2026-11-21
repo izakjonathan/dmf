@@ -51,6 +51,8 @@ function doPost(event) {
         console.warn("Stagebook received an invalid workbook revision.");
         return respond({ok:false});
       }
+      if (request.sheetBookingId && !sheetBookingMatches(book,request.state,request.sheetBookingId))
+        return respond({ok:false,error:"BOOKING_SOURCE_CHANGED"});
       step = "saving the workbook";
       writeWorkbook(book, request.state);
       return respond({ok:true});
@@ -58,12 +60,15 @@ function doPost(event) {
     const length = storage.getLastRow();
     const encoded = length > 1 ? storage.getRange(2,1,length-1,1).getValues().map(row=>row[0]).join("") : "";
     const state = encoded ? JSON.parse(Utilities.newBlob(Utilities.base64Decode(encoded)).getDataAsString("UTF-8")) : null;
+    if (request.action === "sheetBookingReview") {
+      if (!state?.auth || !sheetBookingMatches(book,state,request.id))
+        return respond({ok:false,error:"BOOKING_SOURCE_CHANGED"});
+      return respond({ok:true,state});
+    }
     if (request.action === "syncBookings" || request.action === "bookingMail") {
       if (!state?.auth) return respond({ok:false});
       if (request.action === "syncBookings") {
-        syncBookingRows(book,state,props);
-        queueBookingReminders(state,props);
-        writeBookingState(book,state);
+        syncAndQueueBookingMail(book,state,props);
       }
       const result = processBookingMail(book,state,props);
       refreshBookingEmailStatuses(book,state);
@@ -72,6 +77,13 @@ function doPost(event) {
     if (request.action === "emailContracts") {
       step = "sending contract emails";
       return respond(emailContracts(book, state, request.links, props));
+    }
+    if (request.action === "health") {
+      let quota = null;
+      try { quota = MailApp.getRemainingDailyQuota(); } catch (error) { console.warn("Stagebook mail quota unavailable."); }
+      let handlers = [];
+      try { handlers = ScriptApp.getProjectTriggers().map(trigger=>trigger.getHandlerFunction()); } catch (error) { console.warn("Stagebook triggers unavailable."); }
+      return respond({ok:true,version:"sheet-contract-approval-1",quota,scheduled:handlers.includes("runBookingAutomation"),onEdit:handlers.includes("bookingSheetEdited")});
     }
     if (request.action === "metadata") return respond({ok:true,initialized:Boolean(state?.auth)});
     if (request.action === "read") return respond({ok:true,state:state});
@@ -176,6 +188,7 @@ function matches(a,b) {
 function respond(data) {
   return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 }
+function normalizeBand(name) { return String(name || "").trim().replace(/\s+/g," ").toLowerCase(); }
 function paymentNet(payment) {
   return payment.voidReason ? 0 : payment.kind === "Refund" ? -payment.amount : payment.amount;
 }
@@ -232,11 +245,23 @@ function rowsFor(state) {
   const bookingEmails = [["Booking ID","Recipient","Kind","Status","Sent at","Issue"]];
   for (const b of state.bookings || []) for (const m of b.members) {
     bookingMembers.push([b.id,b.date,b.act,m.musicianId,m.name,m.email,m.contractId || "",m.attendance || "",m.paymentId || "",b.approvedBy || "",b.confirmedBy || "",b.confirmedAt || "",b.attendanceNote || ""]);
-    const signed = (state.contracts || []).some(c=>c.id===m.contractId && c.bookingVersion===b.version);
-    const status = m.paymentId ? "Paid" : b.cancelled ? "Cancelled" : b.approvedVersion!==b.version ? "Company approval needed" : !signed ? "Artist signature needed" : !b.confirmedAt ? "Performance confirmation needed" : m.attendance!=="played" ? "Performance exception" : "Ready to pay";
-    bookingPayments.push([b.id,b.date,b.act,m.name,m.email,b.fee/100,m.paymentType || b.paymentType,b.dueOn,status,m.paymentId || ""]);
+    const contract = (state.contracts || []).find(c=>c.id===m.contractId && c.bookingVersion===b.version);
+    const payment = (state.payments || []).find(p=>p.id===m.paymentId && !p.voidReason);
+    const manualPayment = (state.payments || []).some(p=>!p.bookingId && !p.voidReason && p.kind==="Payment" &&
+      p.musicianId===m.musicianId && p.performedOn===b.date && normalizeBand(p.band)===normalizeBand(b.act));
+    const status = payment ? "Paid" : b.cancelled ? "Cancelled" : b.sourceError ? "Booking sheet needs attention" :
+      b.confirmedAt && m.attendance==="absent" ? "Artist absent" : b.approvedVersion!==b.version ? "Company approval needed" :
+      !contract ? "Artist signature needed" : !b.confirmedAt ? "Performance confirmation needed" :
+      !m.attendance ? "Attendance not recorded" : m.attendance!=="played" ? "Performance issue" : manualPayment ? "Manual payment needs reconciliation" : "Ready to pay";
+    bookingPayments.push([b.id,b.date,b.act,m.name,m.email,(payment?.amount ?? contract?.offer.fee ?? b.fee)/100,
+      payment?.paymentType || contract?.offer.paymentType || m.paymentType || b.paymentType,b.dueOn,status,payment?.id || ""]);
   }
-  for (const mail of state.bookingMail || []) if (mail.kind!=="verification") bookingEmails.push([mail.bookingId,mail.to,mail.kind,mail.status,mail.sentAt || "",mail.error || ""]);
+  for (const b of state.bookings || []) if (!b.cancelled && b.performance) {
+    for (let i=b.members.length; i<b.expectedMembers; i++)
+      bookingPayments.push([b.id,b.date,b.act,"Unregistered musician","",b.fee ? b.fee/100 : "","",b.dueOn,
+        b.sourceError ? "Booking sheet needs attention" : "Registration needed",""]);
+  }
+  for (const mail of state.bookingMail || []) bookingEmails.push([mail.bookingId,mail.kind==="verification" ? "" : mail.to,mail.kind,mail.status,mail.sentAt || "",mail.error || ""]);
   return {Venue:venue,Musicians:musicians,Payments:payments,Summary:summary,Contracts:contracts,
     "Booking members":bookingMembers,"Booking payments":bookingPayments,"Booking emails":bookingEmails};
 }
@@ -377,7 +402,100 @@ function writeWorkbook(book,state) {
   }
   Sheets.Spreadsheets.batchUpdate({requests},book.getId());
   const bookingSheet=book.getSheetByName("Bookings");
-  if ((state.bookings || []).length && bookingSheet && bookingSheet.getRange("A1").getValue()==="Dato") refreshBookingProjection(book,state);
+  if ((state.bookings || []).length && bookingSheet && bookingSheet.getRange("A1").getValue()==="Dato") {
+    try { refreshBookingProjection(book,state); }
+    catch (error) { console.warn("Booking projection will be retried: "+error.message); }
+  }
+}
+
+
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu("Stagebook")
+    .addItem("Review, sign and send contracts", "reviewAndSendBookingContracts")
+    .addToUi();
+}
+
+function reviewAndSendBookingContracts() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const book = SpreadsheetApp.getActiveSpreadsheet();
+    const owner = book.getOwner()?.getEmail();
+    if (!owner || Session.getActiveUser().getEmail().toLowerCase() !== owner.toLowerCase())
+      throw Error("Only the owner of this workbook can sign on behalf of the venue.");
+    if (book.getId() !== props.getProperty("SPREADSHEET_ID"))
+      throw Error("Open the booking workbook connected to Stagebook.");
+    const range = book.getActiveRange();
+    const sheet = range?.getSheet();
+    if (!sheet || sheet.getName() !== "Bookings" || range.getRow() < 2 || range.getNumRows() !== 1)
+      throw Error("Select a single booking row in the Bookings tab.");
+    const id = String(sheet.getRange(range.getRow(),modernBookingSheet(sheet) ? 23 : 9).getValue()).trim();
+    if (!/^[a-f0-9-]{36}$/i.test(id))
+      throw Error("This booking has not synced yet. Check the Issue column and wait for the next sync.");
+    const details = requestSheetApproval({action:"review",id},props);
+    const p = details.performance;
+    const musicians = details.members.map(m=>m.name+" <"+m.email+"> · "+m.method).join("\n");
+    const terms = details.act+" · "+details.date+" · "+p.start+"–"+p.end+
+      "\nVenue: "+details.organizer.legalName+" (CVR "+details.organizer.cvr+")"+
+      "\nSchedule: "+p.sets+" × "+p.minutesPerSet+" min · Soundcheck: "+p.soundcheck+
+      (p.requests ? "\nRequests: "+p.requests : "")+
+      "\nFee: "+(details.fee/100).toFixed(2)+" DKK per musician"+
+      "\nPayment due: "+details.dueOn+" · Signing deadline: "+details.returnBy+
+      "\n\n"+musicians+"\n\nDMF contract: "+details.template.url+
+      "\n\nEnter your full name and choose OK to confirm these terms, sign for the venue and email the artists. Attendance is recorded separately.";
+    const answer = ui.prompt("Confirm, sign and send contracts",terms,ui.ButtonSet.OK_CANCEL);
+    if (answer.getSelectedButton() !== ui.Button.OK) return;
+    const signer = answer.getResponseText().trim();
+    if (signer.length < 2 || signer.length > 300) throw Error("Enter the venue signer’s full name.");
+    const result = requestSheetApproval({action:"sign",id,review:details.review,signer,accepted:true},props);
+    ui.alert("Stagebook",result.message,ui.ButtonSet.OK);
+  } catch (error) {
+    ui.alert("Stagebook",error.message,ui.ButtonSet.OK);
+  }
+}
+
+function requestSheetApproval(data,props) {
+  const body = JSON.stringify({...data,timestamp:Date.now()}).replace(/[^\x00-\x7f]/g,
+    character=>"\\u"+character.charCodeAt(0).toString(16).padStart(4,"0"));
+  const response = UrlFetchApp.fetch("https://dmf-eta.vercel.app/api/sheet-approval",{
+    method:"post",contentType:"application/json",payload:body,muteHttpExceptions:true,
+    headers:{"X-Stagebook-Signature":bookingHmac("stagebook-sheet-approval:"+body,props)}
+  });
+  let result;
+  try { result = JSON.parse(response.getContentText()); }
+  catch (error) { throw Error("Stagebook could not confirm the request. Open the booking to check its status."); }
+  if (response.getResponseCode() !== 200) throw Error(result.error || "Stagebook could not confirm the request.");
+  return result;
+}
+
+function bookingInput(row,zone,previous,modern) {
+  const date = bookingDate(row[0],zone);
+  return {
+    date,act:String(row[1] || "").trim(),contactEmail:String(row[2] || "").trim().toLowerCase(),
+    expectedMembers:modern && previous ? previous.expectedMembers : modern && (row[3]==="" || row[3]===undefined) ? 1 : Number(row[3]),
+    fee:Math.round(Number(row[4] || 0)*100),
+    dueOn:row[6]==="" ? date && nextBookingWeekday(date) : bookingDate(row[6],zone),
+    cancelled:["yes","true","cancelled"].includes(String(row[7] || "No").trim().toLowerCase())
+  };
+}
+
+function bookingInputRow(row,modern) {
+  return modern ? [row[0],row[2],row[9],row[6],row[18],row[19],row[20],row[21],row[22]] : row;
+}
+
+function sheetBookingMatches(book,state,id) {
+  const booking = state.bookings?.find(item=>item.id===id);
+  const sheet = book.getSheetByName("Bookings");
+  if (!booking?.sourceSignature || booking.sourceError || !sheet || sheet.getLastRow()<2) return false;
+  const modern = modernBookingSheet(sheet);
+  const headers = modern ? BOOKING_OPERATIONS_HEADERS : BOOKING_HEADERS;
+  const actual = sheet.getRange(1,1,1,headers.length).getValues()[0];
+  if (actual.length!==headers.length || !actual.every((value,i)=>value===headers[i])) return false;
+  const rows = sheet.getRange(2,1,sheet.getLastRow()-1,headers.length).getValues()
+    .map(row=>bookingInputRow(row,modern)).filter(row=>String(row[8] || "").trim()===id);
+  if (rows.length!==1 || !["yes","no","true","false","cancelled"].includes(String(rows[0][7] || "No").trim().toLowerCase())) return false;
+  const signature = bookingSourceSignature(JSON.stringify(bookingInput(rows[0],book.getSpreadsheetTimeZone(),booking,modern)),modern);
+  return signature===bookingSourceSignature(booking.sourceSignature,modern);
 }
 
 // Run once after deploying this version. Adds the booking sheet and email triggers.
@@ -451,7 +569,8 @@ function configureModernBookingSheet(sheet) {
   sheet.getRange("A1").setNote("Enter the performance date to create a booking.");
   sheet.getRange("C1").setNote("Enter the act name to create a booking.");
   sheet.getRange("J1").setNote("Enter the contact email. The registration link is sent here automatically.");
-  sheet.getRange("G1").setNote("Updated from the lineup supplied by the artist. Defaults to one until the artist confirms the lineup.");
+  sheet.getRange("G1").setNote("Updated from the lineup supplied by the artist.");
+  sheet.getRange("X1").setNote("Contract status. Select a booking row and choose Stagebook → Review, sign and send contracts.");
   sheet.getRange("B1").setNote("Automatic: true only when every booked musician has a recorded, non-void payment. Editing this cell never processes a payment.");
   sheet.getRange("F1").setNote("Automatic: agreed fee per musician multiplied by the booked musician count, in DKK.");
   sheet.getRange("I1").setNote("Automatic: entrance income divided by total agreed fees. Blank when no fee is agreed.");
@@ -507,15 +626,19 @@ function runBookingAutomation() {
     const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
     const state = readStoredState(book);
     if (!state?.auth) return;
-    syncBookingRows(book,state,props);
-    queueBookingReminders(state,props);
-    writeBookingState(book,state);
+    syncAndQueueBookingMail(book,state,props);
     processBookingMail(book,state,props);
     refreshBookingEmailStatuses(book,state);
   } catch (error) {
     console.error("Stagebook booking automation: " + error.message);
     throw error;
   } finally { lock.releaseLock(); }
+}
+function syncAndQueueBookingMail(book,state,props) {
+  const before = JSON.stringify([state.bookings,state.bookingMail]);
+  syncBookingRows(book,state,props);
+  queueBookingReminders(state,props);
+  if (before!==JSON.stringify([state.bookings,state.bookingMail])) writeBookingState(book,state);
 }
 function bookingDate(value,zone) {
   if (value instanceof Date && !isNaN(value.getTime())) return Utilities.formatDate(value,zone,"yyyy-MM-dd");
@@ -543,8 +666,13 @@ function syncBookingRows(book,state,props) {
   const rows = length < 2 ? [] : sheet.getRange(2,1,length-1,modern ? 28 : BOOKING_HEADERS.length).getValues();
   const zone = book.getSpreadsheetTimeZone();
   const seen = new Set();
+  const occurrences = new Map();
+  for (const row of rows) {
+    const id = String(bookingInputRow(row,modern)[8] || "").trim();
+    if (id) occurrences.set(id,(occurrences.get(id) || 0)+1);
+  }
   rows.forEach((sourceRow,index) => {
-    const row = modern ? [sourceRow[0],sourceRow[2],sourceRow[9],sourceRow[6],sourceRow[18],sourceRow[19],sourceRow[20],sourceRow[21],sourceRow[22],sourceRow[23],sourceRow[24],sourceRow[25],sourceRow[26],sourceRow[27]] : sourceRow;
+    const row = bookingInputRow(sourceRow,modern);
     if (modern ? [row[0],row[1],row[2],row[8]].every(value=>value==="" || value===undefined) : row.slice(0,9).every(value => value === "")) return;
     let id = String(row[8] || "").trim();
     let issue = "";
@@ -562,15 +690,16 @@ function syncBookingRows(book,state,props) {
     if (!Number.isFinite(feeDkk) || feeDkk < 0 || feeDkk > 1000000) issue = "Enter a valid fee in DKK per musician.";
     if (!dueOn) issue = "Enter a valid payment due date.";
     if (!["yes","no","true","false","cancelled"].includes(cancelledText)) issue = "Cancelled must be Yes or No.";
-    if (id && (!/^[a-f0-9-]{36}$/i.test(id) || seen.has(id))) issue = "Duplicate or invalid Booking ID. Keep the original row and clear the copied ID to create another booking.";
+    if (id && (!/^[a-f0-9-]{36}$/i.test(id) || occurrences.get(id)>1)) issue = "Duplicate or invalid Booking ID. Keep the original row and clear the copied ID to create another booking.";
     if (id) seen.add(id);
     let booking = state.bookings.find(item => item.id === id);
     if (issue) {
       if (booking) booking.sourceError = issue;
       sheet.getRange(index+2,modern ? 28 : 14).setValue(issue);
+      sheet.getRange(index+2,modern ? 24 : 10).setValue("Booking sheet needs attention");
       return;
     }
-    const input = {date,act,contactEmail,expectedMembers,fee:Math.round(feeDkk*100),dueOn,cancelled};
+    const input = bookingInput(row,zone,previous,modern);
     const sourceSignature = bookingSourceSignature(JSON.stringify(input),modern);
     if (!id) {
       id = Utilities.getUuid();
@@ -584,8 +713,13 @@ function syncBookingRows(book,state,props) {
       if (booking.members.some(member => member.paymentId)) {
         booking.sourceError = "This booking has processed payments. Restore the input values and create a separate booking for any new performance.";
       } else {
-        Object.assign(booking,input,{sourceSignature,sourceVersion:(booking.sourceVersion || 1)+1,version:booking.version+1,confirmedAt:undefined,confirmedBy:undefined,attendanceNote:undefined,sourceError:undefined});
-        for (const member of booking.members) { member.contractId = undefined; member.attendance = undefined; }
+        const attendanceChanged = booking.date!==input.date || booking.act!==input.act || booking.cancelled!==input.cancelled;
+        Object.assign(booking,input,{sourceSignature,sourceVersion:(booking.sourceVersion || 1)+1,version:booking.version+1,sourceError:undefined});
+        if (attendanceChanged) Object.assign(booking,{confirmedAt:undefined,confirmedBy:undefined,attendanceNote:undefined});
+        for (const member of booking.members) {
+          member.contractId = undefined;
+          if (attendanceChanged) member.attendance = undefined;
+        }
         for (const invite of state.invites) if (invite.bookingId === id && !invite.signedAt) invite.revoked = true;
         for (const mail of state.bookingMail) if (mail.bookingId === id && mail.status === "pending") {
           mail.status = "superseded"; mail.error = "Booking changed. Use its current links.";
@@ -609,8 +743,8 @@ function syncBookingRows(book,state,props) {
     const methods = Array.from(new Set(booking.members.map(member => member.paymentType || booking.paymentType)));
     sheet.getRange(index+2,modern ? 20 : 6).setValue(methods.length > 1 ? "Mixed" : methods[0] || "");
     for (const mail of state.bookingMail) if (mail.bookingId===id && mail.status!=="sent" && !currentBookingMail(mail,booking)) mail.status="superseded";
-    const status = booking.cancelled ? "Cancelled" : booking.confirmedAt ? "Performance confirmed" : booking.approvedVersion===booking.version ? "Company signed" : booking.members.length===booking.expectedMembers && booking.performance ? "Ready for approval" : "Collecting details";
-    sheet.getRange(index+2,modern ? 24 : 10,1,5).setValues([[status,url,booking.members.length+" / "+booking.expectedMembers,
+    const status = sheetBookingContractStatus(state,booking);
+    sheet.getRange(index+2,modern ? 24 : 10,1,5).setValues([[status,url,booking.performance ? booking.members.length+" / "+booking.expectedMembers : booking.members.length+" registered · lineup pending",
       bookingEmailStatus(state,booking),booking.sourceError || ""]]);
   });
   if (modern) refreshBookingProjection(book,state);
@@ -621,6 +755,15 @@ function syncBookingRows(book,state,props) {
 function writeBookingState(book,state) {
   state.revision++;
   writeWorkbook(book,state);
+}
+function sheetBookingContractStatus(state,b) {
+  if (b.cancelled) return "Cancelled";
+  if (b.sourceError) return "Booking sheet needs attention";
+  if (b.approvedVersion!==b.version && b.performance && b.members.length===b.expectedMembers && !b.fee) return "Fee needed";
+  if (b.approvedVersion!==b.version)
+    return b.performance && b.members.length===b.expectedMembers ? "Ready for company signature" : "Waiting for booking details";
+  const signed=b.members.filter(m=>(state.contracts || []).some(c=>c.id===m.contractId && c.bookingVersion===b.version)).length;
+  return signed===b.expectedMembers ? "All contracts signed" : "Company signed · "+signed+"/"+b.expectedMembers+" artists signed";
 }
 function bookingContactUrl(booking,props) {
   return "https://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:contact:"+booking.id+":"+(booking.sourceVersion || 1),props);
@@ -634,18 +777,18 @@ function queueBookingReminders(state,props) {
     if (booking.approvedVersion !== booking.version) {
       if (booking.date < day) continue;
       if (booking.members.length===booking.expectedMembers && booking.performance) continue;
-      const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && ["invitation","reminder"].includes(m.kind) && !m.memberId).pop();
+      const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && ["invitation","reminder"].includes(m.kind) && !m.memberId && currentBookingMail(m,booking)).pop();
       if (previous && (previous.status!=="sent" || now.getTime()-Date.parse(previous.sentAt || previous.createdAt)<86400000)) continue;
-      const id = "reminder:"+booking.id+":"+day;
+      const id = "reminder:"+booking.id+":"+(booking.sourceVersion || 1)+":"+day;
       if (state.bookingMail.some(m=>m.id===id)) continue;
-      state.bookingMail.push({id,bookingId:booking.id,to:booking.contactEmail,kind:"reminder",status:"pending",createdAt:now.toISOString(),
+      state.bookingMail.push({id,bookingId:booking.id,sourceVersion:booking.sourceVersion || 1,to:booking.contactEmail,kind:"reminder",status:"pending",createdAt:now.toISOString(),
         subject:"Registration reminder · "+booking.act+" · "+booking.date,
         body:"Every performing musician must register before playing. "+booking.members.length+" of "+booking.expectedMembers+" are registered. Share the musician link:\nhttps://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:"+booking.id,props)+"\n\nComplete the schedule using your private link:\n"+bookingContactUrl(booking,props)});
     } else {
       for (const member of booking.members) {
         const invite = state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt);
         if (!invite || invite.offer.returnBy < day) continue;
-        const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && m.memberId===member.id).pop();
+        const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && m.memberId===member.id && ["contract","reminder"].includes(m.kind)).pop();
         if (previous && (previous.status!=="sent" || now.getTime()-Date.parse(previous.sentAt || previous.createdAt)<86400000)) continue;
         const id = "sign-reminder:"+invite.id+":"+day;
         if (state.bookingMail.some(m=>m.id===id)) continue;
@@ -657,6 +800,7 @@ function queueBookingReminders(state,props) {
   }
 }
 function processBookingMail(book,state,props) {
+  const before = JSON.stringify(state.bookingMail);
   const delivery = {sent:0,failed:0};
   const completed = [];
   let quota;
@@ -669,9 +813,23 @@ function processBookingMail(book,state,props) {
     // Let a sheet row settle before sending its first invitation while it is being entered.
     if (mail.kind==="invitation" && Date.now()-Date.parse(mail.createdAt)<60000) continue;
     const booking = (state.bookings || []).find(b=>b.id===mail.bookingId);
-    if (!booking || booking.cancelled || booking.sourceError) { mail.status="failed"; mail.error="Booking is cancelled or needs attention."; delivery.failed++; continue; }
+    if (!booking || (mail.kind!=="receipt" && (booking.cancelled || booking.sourceError))) { mail.status="failed"; mail.error="Booking is cancelled or needs attention."; delivery.failed++; continue; }
     if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="superseded"; mail.error="Booking changed. Use its current invitation."; continue; }
     const day = Utilities.formatDate(new Date(),"Europe/Copenhagen","yyyy-MM-dd");
+    if (["contract","approval","invitation","reminder"].includes(mail.kind) && booking.sourceSignature &&
+        !sheetBookingMatches(book,state,booking.id)) {
+      mail.error="Waiting for the current booking row to sync.";
+      delivery.failed++;
+      continue;
+    }
+    if (mail.kind==="reminder" && !mail.memberId &&
+        (booking.date < day || (booking.performance && booking.members.length===booking.expectedMembers))) {
+      mail.status="superseded"; mail.error="Booking changed. Registration reminder is no longer needed."; continue;
+    }
+    if (mail.kind==="approval" &&
+        (booking.approvedVersion===booking.version || !booking.performance || booking.members.length!==booking.expectedMembers)) {
+      mail.status="superseded"; mail.error="Booking changed. Approval reminder is no longer needed."; continue;
+    }
     if (mail.kind==="reminder" && mail.memberId) {
       const member = booking.members.find(m=>m.id===mail.memberId);
       const invite = member && state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt && i.bookingVersion===booking.version);
@@ -680,6 +838,9 @@ function processBookingMail(book,state,props) {
     if (mail.kind==="contract") {
       const invite = state.invites.find(i=>i.id===mail.id.slice(9));
       if (!invite || invite.revoked || invite.signedAt || invite.bookingVersion!==booking.version || (invite.offer && invite.offer.returnBy < day)) { mail.status="superseded"; mail.error="Agreement is no longer awaiting signature."; continue; }
+    }
+    if (mail.kind==="receipt" && !state.contracts?.some(c=>c.id===mail.id.slice(8) && c.offer.performerEmail===mail.to)) {
+      mail.status="superseded"; mail.error="Signed receipt unavailable."; continue;
     }
     if (mail.kind==="verification" && Date.now()-Date.parse(mail.createdAt)>30*60000) { mail.status="failed"; mail.error="Verification expired. Request a new link."; delivery.failed++; continue; }
     const key="stagebook-booking-mail:"+mail.id;
@@ -705,7 +866,7 @@ function processBookingMail(book,state,props) {
       if (code!=="MAIL_UNCERTAIN") props.deleteProperty(key);
     }
   }
-  writeBookingState(book,state);
+  if (before!==JSON.stringify(state.bookingMail)) writeBookingState(book,state);
   for (const key of completed) props.deleteProperty(key);
   return {ok:true,state,delivery};
 }
@@ -713,12 +874,13 @@ function processBookingMail(book,state,props) {
 function currentBookingMail(mail,booking) {
   return mail.status!=="superseded" &&
     (!mail.sourceVersion || mail.sourceVersion===(booking.sourceVersion || 1)) &&
+    (!(mail.kind==="invitation" || (mail.kind==="reminder" && !mail.memberId)) || mail.to===booking.contactEmail) &&
     !/^(Booking changed\.|Signature no longer needed\.|Agreement is no longer awaiting signature\.)/.test(mail.error || "");
 }
 function bookingEmailStatus(state,booking) {
   if (booking.cancelled) return "Cancelled";
-  const emails=(state.bookingMail || []).filter(mail=>mail.bookingId===booking.id && mail.kind!=="verification" && currentBookingMail(mail,booking));
-  if (emails.some(mail=>["failed","uncertain"].includes(mail.status))) return "Needs attention";
+  const emails=(state.bookingMail || []).filter(mail=>mail.bookingId===booking.id && currentBookingMail(mail,booking));
+  if (emails.some(mail=>["failed","uncertain"].includes(mail.status) || (mail.status==="pending" && mail.error))) return "Needs attention";
   if (emails.some(mail=>mail.status==="pending")) return "Queued";
   return emails.length ? "Sent" : "No email pending";
 }
@@ -749,6 +911,11 @@ function refreshBookingProjection(book,state) {
     sheet.getRange(index+2,2).setValue(paid);
     sheet.getRange(index+2,6,1,2).setValues([[total,booking.performance ? booking.expectedMembers : ""]]);
     sheet.getRange(index+2,9).setValue(ratio);
-    sheet.getRange(index+2,11).setValue(contact?.phone ? String(contact.phone) : "");
+    const phone = String(contact?.phone || "");
+    sheet.getRange(index+2,11).setValue(/^[+\d][\d()+ .-]*$/.test(phone) ? phone : "");
+    if (!booking.sourceError) {
+      sheet.getRange(index+2,24).setValue(sheetBookingContractStatus(state,booking));
+      sheet.getRange(index+2,26).setValue(booking.performance ? booking.members.length+" / "+booking.expectedMembers : booking.members.length+" registered · lineup pending");
+    }
   });
 }
