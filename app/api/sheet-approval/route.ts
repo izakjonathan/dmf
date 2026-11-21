@@ -1,8 +1,11 @@
 import { createHmac } from "node:crypto";
 import { z } from "zod";
 import { activeBooking, approveBooking, signingDeadline } from "@/lib/bookings";
-import { dmfTemplate, venueSchema } from "@/lib/model";
+import { dmfTemplate, venueSchema, type Workspace } from "@/lib/model";
 import {
+  admin,
+  sameOrigin,
+  readState,
   bookingContractToken,
   dispatchBookingMail,
   equals,
@@ -31,19 +34,78 @@ const requestSchema = z.discriminatedUnion("action", [
   }),
 ]);
 
+function reviewBooking(state: Workspace, id: string) {
+  const booking = activeBooking(state, id);
+  if (booking.sourceError) throw new RequestError(booking.sourceError, 409);
+  if (booking.approvedVersion === booking.version)
+    return { booking, data: null, review: "" };
+  if (
+    !booking.performance ||
+    booking.members.length !== booking.expectedMembers
+  )
+    throw new RequestError(
+      "Complete the schedule and all musician registrations before signing.",
+      409,
+    );
+  if (!booking.fee)
+    throw new RequestError(
+      "Enter the fee per musician in the booking row or ask the band contact to provide it.",
+      409,
+    );
+  const data = {
+    id: booking.id,
+    version: booking.version,
+    sourceSignature: booking.sourceSignature,
+    act: booking.act,
+    date: booking.date,
+    performance: booking.performance,
+    fee: booking.fee,
+    dueOn: booking.dueOn,
+    returnBy: signingDeadline(booking.date),
+    organizer: venueSchema.parse(state.venue),
+    members: booking.members.map((member) => ({
+      id: member.id,
+      name: member.name,
+      email: member.email,
+      method: member.paymentType || booking.paymentType,
+    })),
+    template: dmfTemplate,
+  };
+  return { booking, data, review: hash(JSON.stringify(data)) };
+}
+
+export async function GET(req: Request) {
+  try {
+    await admin();
+    const id = z.string().uuid().parse(new URL(req.url).searchParams.get("id"));
+    const { data, review } = reviewBooking(await readState(), id);
+    if (!data) return json({ signed: true });
+    return json({ ...data, review });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const secret = process.env.GOOGLE_SCRIPT_SECRET;
     const raw = await req.text();
+    const fromScript = req.headers.has("x-stagebook-signature");
+    let legacy = false;
+    if (!fromScript) {
+      sameOrigin(req);
+      await admin();
+    }
     if (
-      !secret ||
       raw.length > 4000 ||
-      !equals(
-        req.headers.get("x-stagebook-signature") || "",
-        createHmac("sha256", secret)
-          .update("stagebook-sheet-approval:" + raw)
-          .digest("hex"),
-      )
+      (fromScript &&
+        (!secret ||
+          !equals(
+            req.headers.get("x-stagebook-signature") || "",
+            createHmac("sha256", secret)
+              .update("stagebook-sheet-approval:" + raw)
+              .digest("hex"),
+          )))
     )
       throw new RequestError("Open Stagebook from the booking workbook.", 403);
     const input = requestSchema.parse(JSON.parse(raw));
@@ -52,53 +114,38 @@ export async function POST(req: Request) {
         "This request expired. Open the booking again.",
         403,
       );
-    const { state } = await sheets("sheetBookingReview", { id: input.id });
-    const booking = activeBooking(state, input.id);
-    if (booking.approvedVersion === booking.version) {
+    let state: Workspace;
+    if (fromScript || input.action === "review") {
+      ({ state } = await sheets("sheetBookingReview", { id: input.id }));
+    } else {
+      // Prefer the adapter's row-level check. Older deployments expose the established sync action.
+      try {
+        ({ state } = await sheets("sheetBookingReview", { id: input.id }));
+      } catch (error) {
+        if (
+          !(error instanceof RequestError) ||
+          error.status !== 503 ||
+          !error.message.startsWith(
+            "Update the existing Apps Script deployment",
+          )
+        )
+          throw error;
+        ({ state } = await sheets("syncBookings"));
+        legacy = true;
+      }
+    }
+    const { booking, data, review } = reviewBooking(state, input.id);
+    if (!data) {
       if (input.action === "sign")
         return json({
           message:
-            "The company signature is already saved. Check email status before retrying.",
+            "The company signature is already saved. Check the contract status in Stagebook.",
         });
       throw new RequestError(
         "The company has already signed this version.",
         409,
       );
     }
-    if (
-      !booking.performance ||
-      booking.members.length !== booking.expectedMembers
-    )
-      throw new RequestError(
-        "Complete the schedule and all musician registrations before signing.",
-        409,
-      );
-    if (!booking.fee)
-      throw new RequestError(
-        "Enter the fee per musician in the booking row or ask the band contact to provide it.",
-        409,
-      );
-    const organizer = venueSchema.parse(state.venue);
-    const returnBy = signingDeadline(booking.date);
-    const data = {
-      id: booking.id,
-      version: booking.version,
-      sourceSignature: booking.sourceSignature,
-      act: booking.act,
-      date: booking.date,
-      performance: booking.performance,
-      fee: booking.fee,
-      dueOn: booking.dueOn,
-      returnBy,
-      organizer,
-      members: booking.members.map((m) => ({
-        name: m.name,
-        email: m.email,
-        method: m.paymentType || booking.paymentType,
-      })),
-      template: dmfTemplate,
-    };
-    const review = hash(JSON.stringify(data));
     if (input.action === "review") return json({ ...data, review });
     if (!equals(input.review, review))
       throw new RequestError(
@@ -117,7 +164,10 @@ export async function POST(req: Request) {
         };
       },
     );
-    const signed = await writeState(state, { sheetBookingId: booking.id });
+    const signed = await writeState(
+      state,
+      legacy ? undefined : { sheetBookingId: booking.id },
+    );
     const ids = new Set(
       signed.invites
         .filter(

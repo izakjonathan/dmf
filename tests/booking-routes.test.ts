@@ -16,6 +16,8 @@ test("booking API completes registration, signatures, attendance and payment wit
   let administrator = true;
   const secret = "synthetic-test-secret";
   let sheetReady = true;
+  let legacyAdapter = false;
+  let syncs = 0;
   state.bookings = [
     {
       id: bookingId,
@@ -52,9 +54,18 @@ test("booking API completes registration, signatures, attendance and payment wit
     equals: (a: string, b: string) => a === b,
     RequestError,
     readState: async () => structuredClone(state),
-    sheets: async (action: string, options: { id: string }) => {
+    sheets: async (action: string, options?: { id: string }) => {
+      if (legacyAdapter && action === "sheetBookingReview")
+        throw new RequestError(
+          "Update the existing Apps Script deployment before signing from Sheets.",
+          503,
+        );
+      if (action === "syncBookings" && legacyAdapter) {
+        syncs++;
+        return { state: structuredClone(state) };
+      }
       assert.equal(action, "sheetBookingReview");
-      assert.equal(options.id, bookingId);
+      assert.equal(options?.id, bookingId);
       if (!sheetReady) throw new RequestError("Booking source changed", 409);
       return { state: structuredClone(state) };
     },
@@ -393,7 +404,30 @@ test("booking API completes registration, signatures, attendance and payment wit
     409,
   );
   state.bookings![0].fee--;
-  const approved = await sheetApproval.POST(sheetPost("sign", signingRequest));
+  const reviewUrl = "https://example.com/api/sheet-approval?id=" + bookingId;
+  administrator = false;
+  assert.equal((await sheetApproval.GET(new Request(reviewUrl))).status, 401);
+  const webSign = () =>
+    post(
+      {
+        ...signingRequest,
+        action: "sign",
+        id: bookingId,
+        timestamp: Date.now(),
+      },
+      "https://example.com/api/sheet-approval",
+    );
+  assert.equal((await sheetApproval.POST(webSign())).status, 401);
+  administrator = true;
+  assert.equal((await sheetApproval.GET(new Request(reviewUrl))).status, 200);
+  legacyAdapter = true;
+  state.bookings![0].dueOn = "2099-02-10";
+  assert.equal((await sheetApproval.POST(webSign())).status, 409);
+  assert.equal(state.invites.length, 0);
+  state.bookings![0].dueOn = model.today();
+  const approved = await sheetApproval.POST(webSign());
+  assert.equal(syncs, 2);
+  legacyAdapter = false;
   assert.equal(approved.status, 200);
   assert.match((await approved.json()).message, /2 of 2/);
   assert.equal(state.bookings![0].confirmedBy, "Night Employee");

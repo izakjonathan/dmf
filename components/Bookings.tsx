@@ -633,11 +633,13 @@ export default function Bookings({
                             </ul>
                             {!booking.cancelled &&
                               booking.approvedVersion !== booking.version && (
-                                <p className="fine">
-                                  To sign for the venue and email the musicians,
-                                  select this booking in Google Sheets and use
-                                  Stagebook → Review, sign and send contracts.
-                                </p>
+                                <a
+                                  href={
+                                    "/?review=" + encodeURIComponent(booking.id)
+                                  }
+                                >
+                                  Review, sign and send contracts
+                                </a>
                               )}
                             {!booking.cancelled &&
                               !booking.members.some((m) => m.paymentId) && (

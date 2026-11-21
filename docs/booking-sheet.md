@@ -11,7 +11,11 @@ The first 18 columns match the venue's original booking sheet. The active Stageb
 
 The upgrade takes the workbook lock, reads the latest active rows, carries over staff fields from the prepared tab, and retains the original tab as a timestamped backup. It preserves booking IDs and existing invitation links. It does not send emails or mark any payments as processed. Existing on-edit and scheduled triggers continue to work. Running the upgrade again is safe. Do not manually rename or rearrange the active tab before upgrading.
 
-## Confirm, sign and send before the gig
+## Review from a booking row
+
+Use **Review contract** in column AC to open that booking in Stagebook. Sign in to Stagebook if prompted. Review the terms, enter the company signer’s name and confirm before sending. On older Apps Script versions, Stagebook syncs the booking row before saving the signature. If the terms changed, it asks you to review them again.
+
+## Confirm, sign and send from the Sheets menu
 
 Select a single row on **Bookings**. Once the schedule, fee and all registrations are complete, open **Stagebook → Review, sign and send contracts**. Review the terms, enter the venue signer's full name and choose **OK**. Closing the dialog makes no change. The menu requires the workbook owner's Google account. The artist emails each contain their own signature link. Column X tracks the contract status, and Stagebook shows individual email and signature status.
 

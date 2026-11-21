@@ -24,6 +24,7 @@ import {
 } from "@/lib/model";
 
 import Bookings from "./Bookings";
+import BookingReview from "./BookingReview";
 import { ViewportTheme } from "./ViewportTheme";
 import { BankFields } from "./BankFields";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
@@ -109,6 +110,7 @@ export function Brand() {
   );
 }
 export default function Dashboard() {
+  const [reviewId, setReviewId] = useState("");
   const [page, setPage] = useState<Page>("Bookings");
   const [mode, setMode] = useState<
     "loading" | "connect" | "setup" | "login" | "app"
@@ -182,6 +184,7 @@ export default function Dashboard() {
     }
   }, [loadWorkspace]);
   useEffect(() => {
+    setReviewId(new URLSearchParams(location.search).get("review") || "");
     void start();
   }, [start]);
   useEffect(() => {
@@ -214,6 +217,10 @@ export default function Dashboard() {
     };
   }, [actionsOpen]);
   function go(next: Page) {
+    if (reviewId) {
+      window.history.replaceState(null, "", location.pathname);
+      setReviewId("");
+    }
     navigation.current?.hidePopover();
     setActionsOpen(false);
     setPage(next);
@@ -537,7 +544,8 @@ export default function Dashboard() {
               {error}
             </p>
           )}
-          {page === "Bookings" && <Bookings />}
+          {page === "Bookings" &&
+            (reviewId ? <BookingReview id={reviewId} /> : <Bookings />)}
           {page === "Overview" && (
             <>
               <div className="stats">
