@@ -43,7 +43,7 @@ test("booking API completes registration, signatures, attendance and payment wit
     sameOrigin: (req: Request) => {
       assert.equal(req.headers.get("origin"), "https://example.com");
     },
-    bookingToken: () => bookingToken,
+    bookingToken: (id: string) => (id === bookingId ? bookingToken : hash(id)),
     bookingContractToken: (id: string) => hash("sign:" + id),
     token: () => hash(crypto.randomUUID()),
     hash,
@@ -193,7 +193,26 @@ test("booking API completes registration, signatures, attendance and payment wit
     }),
     context,
   );
-  assert.equal(directAct.status, 200);
+  assert.equal(directAct.status, 403);
+  const privateToken = server.bookingToken(
+    bookingModel.contactBookingId(state.bookings![0]),
+  );
+  const privateAct = await artist.POST(
+    post({
+      action: "act",
+      performance: {
+        start: "21:00",
+        end: "00:00",
+        sets: 2,
+        minutesPerSet: 45,
+        soundcheck: "Yes",
+      },
+      expectedMembers: 2,
+      fee: 315000,
+    }),
+    { params: Promise.resolve({ token: privateToken }) },
+  );
+  assert.equal(privateAct.status, 200);
   state = beforeDirectRegistration;
   const proofs = new Map<string, string>();
   for (const person of [contact, musician]) {
@@ -273,6 +292,53 @@ test("booking API completes registration, signatures, attendance and payment wit
     401,
   );
   administrator = true;
+  const staffLinkResponse = await owner.POST(
+    post({
+      action: "staffLink",
+      data: { day: model.today(), name: "Night Employee" },
+    }),
+  );
+  assert.equal(staffLinkResponse.status, 200);
+  const staffLink = (await staffLinkResponse.json()).link.split("/").pop();
+  const staffEndpoint = "https://example.com/api/bookings?night=" + staffLink;
+  administrator = false;
+  const staffView = await (await owner.GET(new Request(staffEndpoint))).json();
+  assert.equal(staffView.staff.name, "Night Employee");
+  assert.equal(staffView.bookings[0].members[0].email, undefined);
+  assert.equal(staffView.bookings[0].members[0].payout, undefined);
+  assert.equal(staffView.bookings[0].fee, undefined);
+  assert.equal(
+    (await owner.POST(post({ action: "paid" }, staffEndpoint))).status,
+    403,
+  );
+  const attended = await owner.POST(
+    post(
+      {
+        action: "attendance",
+        id: bookingId,
+        data: {
+          by: "Untrusted name",
+          members: state.bookings![0].members.map((m) => ({
+            id: m.id,
+            status: "played",
+          })),
+        },
+      },
+      staffEndpoint,
+    ),
+  );
+  assert.equal(attended.status, 200);
+  assert.equal(state.bookings![0].confirmedBy, "Night Employee");
+  administrator = true;
+  assert.equal(
+    (
+      await owner.POST(
+        post({ action: "revokeStaff", data: { day: model.today() } }),
+      )
+    ).status,
+    200,
+  );
+  assert.equal((await owner.GET(new Request(staffEndpoint))).status, 403);
   const approved = await owner.POST(
     post({
       action: "approve",
@@ -287,7 +353,27 @@ test("booking API completes registration, signatures, attendance and payment wit
   );
   assert.equal(approved.status, 200);
   const historyCount = state.payments.length;
-  for (const invite of state.invites.filter((i) => i.bookingId === bookingId)) {
+  const oldInvite = state.invites.find((i) => i.bookingId === bookingId)!;
+  const reissued = await owner.POST(
+    post({
+      action: "reissue",
+      id: bookingId,
+      data: { memberId: oldInvite.memberId, returnBy: "2099-01-01" },
+    }),
+  );
+  assert.equal(reissued.status, 200);
+  assert.equal(state.invites.find((i) => i.id === oldInvite.id)?.revoked, true);
+  const replacement = state.invites.find(
+    (i) => i.memberId === oldInvite.memberId && !i.revoked,
+  )!;
+  assert.equal(
+    replacement.offer!.organizerSignedAt,
+    oldInvite.offer!.organizerSignedAt,
+  );
+  assert.equal(replacement.offer!.returnBy, "2099-01-01");
+  for (const invite of state.invites.filter(
+    (i) => i.bookingId === bookingId && !i.revoked,
+  )) {
     const raw = hash("sign:" + invite.id);
     const ctx = { params: Promise.resolve({ token: raw }) };
     const form = {
@@ -308,13 +394,6 @@ test("booking API completes registration, signatures, attendance and payment wit
     assert.equal((await signing.POST(post(form), ctx)).status, 409);
   }
   assert.equal(state.payments.length, historyCount);
-  const attended = await owner.POST(
-    post({
-      action: "attendanceDate",
-      data: { date: model.today(), by: "Night Employee" },
-    }),
-  );
-  assert.equal(attended.status, 200);
   const members = state.bookings![0].members.map((m) => ({
     bookingId,
     memberId: m.id,

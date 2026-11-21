@@ -1212,6 +1212,9 @@ function MusicianEditor({
 }) {
   const [payee, setPayee] = useState(profile.payee);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState(
+    profile.preferredPaymentType || "Bank transfer",
+  );
   if (profile.deletedAt)
     return (
       <>
@@ -1299,7 +1302,20 @@ function MusicianEditor({
           </Field>
         )}
       </div>
-      <BankFields profile={profile} />
+      <Field label="Preferred payment method">
+        <select
+          name="preferredPaymentType"
+          value={paymentMethod}
+          onChange={(event) =>
+            setPaymentMethod(event.target.value as typeof paymentMethod)
+          }
+        >
+          <option>Bank transfer</option>
+          <option>Cash</option>
+          <option>Mobilepay</option>
+        </select>
+      </Field>
+      {paymentMethod === "Bank transfer" && <BankFields profile={profile} />}
       <button disabled={busy}>{busy ? "Saving…" : "Save musician"}</button>
       <div className="booking-form">
         {confirmDelete ? (

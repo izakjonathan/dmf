@@ -17,13 +17,17 @@ import {
   token,
   writeState,
 } from "@/lib/server";
-import type { Booking } from "@/lib/bookings";
+import { contactBookingId, type Booking } from "@/lib/bookings";
 export const maxDuration = 60;
 type Context = { params: Promise<{ token: string }> };
 function findBooking(state: Workspace, raw: string) {
   if (!/^[a-f0-9]{64}$/.test(raw))
     throw new RequestError("Invalid booking link.", 404);
-  const booking = state.bookings?.find((b) => equals(bookingToken(b.id), raw));
+  const booking = state.bookings?.find(
+    (b) =>
+      equals(bookingToken(b.id), raw) ||
+      equals(bookingToken(contactBookingId(b)), raw),
+  );
   if (!booking || booking.cancelled || booking.sourceError)
     throw new RequestError("This booking is unavailable or cancelled.", 404);
   return booking;
@@ -68,18 +72,30 @@ function publicDetails(state: Workspace, booking: Booking) {
 export async function GET(req: Request, context: Context) {
   try {
     const state = await readState();
-    const booking = findBooking(state, (await context.params).token);
+    const raw = (await context.params).token;
+    const booking = findBooking(state, raw);
+    const isContact = equals(bookingToken(contactBookingId(booking)), raw);
+    const sharedPath = "/b/" + bookingToken(booking.id);
     const proofToken = new URL(req.url).searchParams.get("verify");
-    if (!proofToken) return json(publicDetails(state, booking));
+    if (!proofToken)
+      return json({ ...publicDetails(state, booking), isContact, sharedPath });
     const proof = verify(state, booking, proofToken);
-    const profile = state.musicians.find(
-      (m) => m.email.toLowerCase() === proof.email,
-    );
+    const profile =
+      state.musicians.find(
+        (m) =>
+          m.id ===
+          booking.members.find((member) => member.email === proof.email)
+            ?.musicianId,
+      ) ||
+      state.musicians.find(
+        (m) => !m.deletedAt && m.email.toLowerCase() === proof.email,
+      );
     const { cpr, ...safeProfile } = profile || {};
     return json({
       ...publicDetails(state, booking),
       email: proof.email,
-      isContact: proof.email === booking.contactEmail,
+      isContact: isContact || proof.email === booking.contactEmail,
+      sharedPath,
       profile: profile ? safeProfile : null,
       paymentType: booking.members.find((m) => m.email === proof.email)
         ?.paymentType,
@@ -145,7 +161,7 @@ export async function POST(req: Request, context: Context) {
           " on " +
           booking.date +
           ".\n\nhttps://dmf-eta.vercel.app/b/" +
-          raw +
+          bookingToken(booking.id) +
           "?verify=" +
           secret +
           "\n\nThis link expires in 30 minutes. Please keep it private. Every musician must register before playing.",
@@ -172,13 +188,16 @@ export async function POST(req: Request, context: Context) {
     const proof = body.verification
       ? verify(state, booking, String(body.verification))
       : null;
-    if (booking.approvedVersion === booking.version || booking.confirmedAt)
+    if (booking.approvedVersion === booking.version)
       throw new RequestError(
         "The lineup and agreement are approved. Contact the venue to request a change.",
         409,
       );
     if (body.action === "act") {
-      if (proof && proof.email !== booking.contactEmail)
+      if (
+        proof?.email !== booking.contactEmail &&
+        !equals(bookingToken(contactBookingId(booking)), raw)
+      )
         throw new RequestError(
           "Only the booking contact can change the act details.",
           403,
@@ -216,16 +235,23 @@ export async function POST(req: Request, context: Context) {
         throw new RequestError("Use your verified email address.", 403);
       // A shared booking link may create a profile, but never retrieve or
       // overwrite a previously saved musician's private/payment information.
-      const existing = proof
-        ? state.musicians.find((m) => m.email.toLowerCase() === proof.email)
-        : undefined;
       const member = booking.members.find((m) => m.email === input.email);
+      const existing = proof
+        ? state.musicians.find((m) => m.id === member?.musicianId) ||
+          state.musicians.find(
+            (m) => m.email.toLowerCase() === proof.email && !m.deletedAt,
+          )
+        : undefined;
       if (member && !proof)
         throw new RequestError(
           "Details have already been submitted for this email. Contact the venue for changes.",
           409,
         );
-      if (!member && booking.members.length >= booking.expectedMembers)
+      if (
+        !member &&
+        booking.members.length >=
+          (booking.performance ? booking.expectedMembers : 100)
+      )
         throw new RequestError(
           "The lineup is full. Ask the band contact to update the member count.",
           409,
@@ -245,8 +271,14 @@ export async function POST(req: Request, context: Context) {
       if (existing)
         state.musicians[state.musicians.indexOf(existing)] = profile;
       else state.musicians.push(profile);
+      const { registration, account, iban, phone, payee, cvr } = profile;
+      const payout = { registration, account, iban, phone, payee, cvr };
+      const { name, email, address, band } = profile;
+      const performer = { name, email, address, phone, band, cvr, payee };
       if (member)
         Object.assign(member, {
+          performer,
+          payout,
           name: profile.name,
           musicianId: profile.id,
           paymentType,
@@ -257,6 +289,8 @@ export async function POST(req: Request, context: Context) {
           musicianId: profile.id,
           name: profile.name,
           email: profile.email,
+          performer,
+          payout,
           paymentType,
         });
     } else throw new RequestError("Unknown booking action.");
@@ -266,11 +300,16 @@ export async function POST(req: Request, context: Context) {
       booking.performance && booking.members.length === booking.expectedMembers;
     if (
       complete &&
-      !state.bookingMail?.some((m) => m.id === "approval:" + booking.id)
+      !state.bookingMail?.some(
+        (m) =>
+          m.id ===
+          "approval:" + booking.id + ":" + (booking.sourceVersion || 1),
+      )
     ) {
       state.bookingMail ??= [];
       state.bookingMail.push({
-        id: "approval:" + booking.id,
+        id: "approval:" + booking.id + ":" + (booking.sourceVersion || 1),
+        sourceVersion: booking.sourceVersion || 1,
         bookingId: booking.id,
         kind: "approval",
         to: state.venue.email,

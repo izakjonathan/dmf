@@ -8,7 +8,7 @@ const email = z
   .email()
   .max(254)
   .transform((value) => value.toLowerCase());
-const date = z
+export const date = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
   .refine((value) => {
@@ -83,6 +83,16 @@ export const musicianSchema = z
     }
     if (value.payee === "Business" && !value.cvr)
       issue("cvr", "Enter the business CVR.");
+    if (value.preferredPaymentType === "Mobilepay" && !value.phone)
+      issue("phone", "Enter your Mobilepay phone number.");
+    if (
+      (value.preferredPaymentType === "Cash" ||
+        value.preferredPaymentType === "Mobilepay") &&
+      !value.iban &&
+      !value.registration &&
+      !value.account
+    )
+      return;
     if (value.iban) {
       if (!validIban(value.iban)) issue("iban", "Enter a valid IBAN.");
       if (value.registration || value.account)
@@ -218,6 +228,7 @@ export type Workspace = {
   bookings?: Booking[];
   bookingMail?: BookingMail[];
   bookingVerifications?: BookingVerification[];
+  nightAccess?: Record<string, { id: string; name: string; until: string }>;
   auth?: { email: string; passwordHash: string };
   attempts?: { key: string; at: number }[];
 };

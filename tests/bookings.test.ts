@@ -357,7 +357,7 @@ test("booking email reservations prevent duplicate sends after a failed status s
       runInNewContext(
         script +
           "\nwriteBookingState = function(){throw Error('Save interrupted')}; processBookingMail({},state,props);",
-        { state, props, MailApp },
+        { state, props, MailApp, Utilities: { formatDate: today } },
       ),
     /Save interrupted/,
   );
@@ -366,7 +366,7 @@ test("booking email reservations prevent duplicate sends after a failed status s
   runInNewContext(
     script +
       "\nwriteBookingState = function(){}; processBookingMail({},state,props);",
-    { state, props, MailApp },
+    { state, props, MailApp, Utilities: { formatDate: today } },
   );
   assert.equal(sends, 1);
   assert.equal(state.bookingMail[0].status, "sent");
@@ -395,6 +395,7 @@ test("an unknown mail outcome is held for manual follow-up instead of sent twice
     {
       state,
       props,
+      Utilities: { formatDate: today },
       MailApp: {
         getRemainingDailyQuota: () => 10,
         sendEmail: () => {

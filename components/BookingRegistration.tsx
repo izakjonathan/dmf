@@ -26,6 +26,7 @@ type Details = {
   };
   email?: string;
   isContact?: boolean;
+  sharedPath?: string;
   profile?: Musician | null;
   registered?: boolean;
   paymentType?: string;
@@ -65,6 +66,16 @@ export default function BookingRegistration({ token }: { token: string }) {
       active = false;
     };
   }, [endpoint]);
+  const [copyMessage, setCopyMessage] = useState("");
+  async function copySharedLink() {
+    const url = location.origin + details!.sharedPath;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyMessage("Musician registration link copied.");
+    } catch {
+      setCopyMessage(url);
+    }
+  }
   async function submit(event: FormEvent<HTMLFormElement>, action: string) {
     event.preventDefault();
     const fields = Object.fromEntries(new FormData(event.currentTarget));
@@ -149,9 +160,10 @@ export default function BookingRegistration({ token }: { token: string }) {
         {details && (
           <>
             <p className="fine">
-              {details.booking.registered} of {details.booking.expectedMembers}{" "}
-              musicians registered. Every musician must complete their own
-              details before playing.
+              {details.booking.performance
+                ? `${details.booking.registered} of ${details.booking.expectedMembers} musicians registered.`
+                : `${details.booking.registered} registered. The band contact will confirm the lineup size.`}{" "}
+              Each musician needs to register before playing.
             </p>
             {details.booking.approved ? (
               <div className="panel">
@@ -163,7 +175,7 @@ export default function BookingRegistration({ token }: { token: string }) {
               </div>
             ) : (
               <>
-                {(!details.email || details.isContact) && (
+                {details.isContact && (
                   <form
                     className="panel"
                     onSubmit={(e) => void submit(e, "act")}
@@ -171,7 +183,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                     <h2>Act and lineup</h2>
                     <p className="fine">
                       Complete the schedule once for the whole act. Share the
-                      original booking link with every performing musician.
+                      musician registration link with every performing musician.
                     </p>
                     <div className="grid">
                       <label>
@@ -182,7 +194,10 @@ export default function BookingRegistration({ token }: { token: string }) {
                           required
                           min={1}
                           max={100}
-                          defaultValue={details.booking.expectedMembers}
+                          defaultValue={Math.max(
+                            details.booking.registered,
+                            details.booking.expectedMembers,
+                          )}
                         />
                       </label>
                       <label>
@@ -202,7 +217,21 @@ export default function BookingRegistration({ token }: { token: string }) {
                     <ArtistPerformanceFields
                       value={details.booking.performance}
                     />
-                    <button disabled={busy}>Save act details</button>
+                    <div className="row">
+                      <button disabled={busy}>Save act details</button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void copySharedLink()}
+                      >
+                        Copy musician link
+                      </button>
+                    </div>
+                    {copyMessage && (
+                      <p className="fine" role="status">
+                        {copyMessage}
+                      </p>
+                    )}
                   </form>
                 )}
                 {details.registered && !verification ? (
@@ -213,8 +242,8 @@ export default function BookingRegistration({ token }: { token: string }) {
                       email after the venue approves the booking.
                     </p>
                     <p className="fine">
-                      Every other musician can use this same booking link to
-                      register their own details.
+                      Share the musician registration link with everyone
+                      performing.
                     </p>
                   </div>
                 ) : (
@@ -322,7 +351,9 @@ export default function BookingRegistration({ token }: { token: string }) {
                         <option>Mobilepay</option>
                       </select>
                     </label>
-                    <BankFields profile={details.profile || undefined} />
+                    {paymentType === "Bank transfer" && (
+                      <BankFields profile={details.profile || undefined} />
+                    )}
                     <p className="fine">
                       {paymentType && <>Payment method · {paymentType}. </>}{" "}
                       {details.booking.fee > 0 && (
@@ -338,6 +369,36 @@ export default function BookingRegistration({ token }: { token: string }) {
                       {busy ? "Saving…" : "Save my details"}
                     </button>
                   </form>
+                )}
+                {!verification && !details.registered && (
+                  <details className="panel">
+                    <summary>
+                      {details.isContact
+                        ? "Reuse previously saved details"
+                        : "Reuse saved details or update your registration"}
+                    </summary>
+                    <form
+                      className="booking-form"
+                      onSubmit={(e) => void submit(e, "verify")}
+                    >
+                      <p className="fine">
+                        We’ll email you a private link to use your existing
+                        details or correct your entry.
+                        {!details.isContact &&
+                          " If you’re the booking contact, you can also use it to edit the schedule."}
+                      </p>
+                      <label>
+                        Email
+                        <input
+                          name="email"
+                          type="email"
+                          required
+                          autoComplete="email"
+                        />
+                      </label>
+                      <button disabled={busy}>Email me a private link</button>
+                    </form>
+                  </details>
                 )}
               </>
             )}

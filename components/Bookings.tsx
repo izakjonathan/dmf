@@ -1,12 +1,22 @@
 "use client";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { bookingOverview, type Booking } from "@/lib/bookings";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import { bookingOverview, signingDeadline, type Booking } from "@/lib/bookings";
+import { AttendanceEditor } from "./AttendanceEditor";
 import { dmfTemplate, money, today } from "@/lib/model";
 function bookingDate(date: string) {
   const [year, month, day] = date.split("-");
   return `${day}/${month}/${year}`;
 }
-type View = ReturnType<typeof bookingOverview>[number] & { link: string };
+type View = ReturnType<typeof bookingOverview>[number] & {
+  link: string;
+  contactLink: string;
+};
 type Account = {
   memberId: string;
   name: string;
@@ -53,44 +63,121 @@ export default function Bookings({
   const [accounts, setAccounts] = useState<Record<string, Account[]>>({});
   const [selected, setSelected] = useState<string[]>([]);
   const [filter, setFilter] = useState("Pending");
+  const requestGeneration = useRef(0);
+  const saving = useRef(false);
+  const [updated, setUpdated] = useState("");
   const load = useCallback(async () => {
+    if (saving.current) return;
+    const generation = ++requestGeneration.current;
     try {
       const result = await request();
+      if (generation !== requestGeneration.current) return;
       setBookings(result.bookings);
+      setAccounts({});
+      const ready = new Set<string>(
+        result.bookings.flatMap((b: View) =>
+          b.members
+            .filter((m) => m.status === "Ready to pay")
+            .map((m) => b.id + ":" + m.id),
+        ),
+      );
+      setSelected((current) => current.filter((key) => ready.has(key)));
+      setUpdated(
+        new Date().toLocaleTimeString("en-DK", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      );
       setSheet(result.sheet || "");
     } catch (e) {
-      setError((e as Error).message);
+      if (generation === requestGeneration.current)
+        setError((e as Error).message);
     } finally {
       setLoaded(true);
     }
   }, []);
   useEffect(() => {
+    const savedDate = sessionStorage.getItem("stagebook-booking-date");
+    const savedEmployee = sessionStorage.getItem("stagebook-employee");
+    if (savedDate) {
+      setSelectedDate(savedDate);
+      setPast(savedDate < today());
+    }
+    if (savedEmployee) setEmployee(savedEmployee);
     void load();
+    const refresh = () => {
+      if (!document.hidden) void load();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [load]);
+  function chooseDate(date: string) {
+    setSelectedDate(date);
+    sessionStorage.setItem("stagebook-booking-date", date);
+  }
   async function act(action: string, id?: string, data?: unknown) {
+    if (saving.current) return;
+    saving.current = true;
+    requestGeneration.current++;
     setBusy(true);
     setError("");
     setNotice("");
     try {
       const result =
-        action === "link"
-          ? { link: bookings.find((booking) => booking.id === id)?.link }
+        action === "link" || action === "contactLink"
+          ? {
+              link: bookings.find((booking) => booking.id === id)?.[
+                action === "link" ? "link" : "contactLink"
+              ],
+            }
           : await request({ action, id, data });
-      if (result.bookings) setBookings(result.bookings);
+      if (result.bookings) {
+        setBookings(result.bookings);
+        setUpdated(
+          new Date().toLocaleTimeString("en-DK", {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        );
+      }
       if (result.link) {
         const url = location.origin + result.link;
         try {
           await navigator.clipboard.writeText(url);
-          setNotice("Booking link copied.");
+          setNotice(
+            {
+              link: "Musician registration link copied.",
+              contactLink: "Private band contact link copied.",
+              staffLink:
+                "Staff link copied. Share it with the named staff member only.",
+              signingLink: "Signing link copied.",
+            }[action] || "Link copied.",
+          );
         } catch {
           setNotice(url);
         }
       } else
         setNotice(
-          result.warning ||
+          result.message ||
+            result.warning ||
             (result.delivery?.failed
               ? "Saved. Some emails need attention below."
-              : "Saved."),
+              : {
+                  approve:
+                    "Company signature saved. Check email status for each signing request.",
+                  reissue:
+                    "New signing link created. Check email status for delivery.",
+                  attendance: "Performance recorded.",
+                  attendanceDate: "Night confirmed.",
+                  paid: "Processed payments recorded.",
+                  sync: "Bookings updated from Google Sheets.",
+                  retry:
+                    "Email retry completed. Check email status for delivery.",
+                }[action] || "Saved."),
         );
       if (action === "paid") {
         setSelected([]);
@@ -99,6 +186,7 @@ export default function Bookings({
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   }
@@ -136,18 +224,50 @@ export default function Bookings({
       key: booking.id + ":" + member.id,
     })),
   );
+  const unregistered = bookings
+    .filter((b) => !b.cancelled)
+    .map((b) => ({
+      booking: b,
+      missing: b.performance
+        ? Math.max(0, b.expectedMembers - b.members.length)
+        : 0,
+    }))
+    .filter((entry) => entry.missing > 0);
+  const missingCost = unregistered.reduce(
+    (sum, { booking, missing }) => sum + booking.fee * missing,
+    0,
+  );
+  const unconfirmedLineups = bookings.filter(
+    (b) => !b.cancelled && !b.performance,
+  ).length;
+  const pendingCost = obligations
+    .filter(
+      (o) => !["Paid", "Cancelled", "Artist absent"].includes(o.member.status),
+    )
+    .reduce((sum, o) => sum + o.member.amount, missingCost);
   const filtered = obligations.filter(({ booking, member }) =>
     filter === "Paid"
       ? member.status === "Paid"
       : filter === "Ready to pay"
         ? member.status === "Ready to pay"
         : filter === "Overdue"
-          ? !["Paid", "Cancelled"].includes(member.status) &&
+          ? !["Paid", "Cancelled", "Artist absent"].includes(member.status) &&
             booking.dueOn < today()
           : filter === "Needs attention"
             ? !["Ready to pay", "Paid", "Cancelled"].includes(member.status)
             : !["Paid", "Cancelled"].includes(member.status),
   );
+  const groups = bookings
+    .map((booking) => ({
+      booking,
+      rows: filtered.filter((row) => row.booking.id === booking.id),
+    }))
+    .filter((group) => group.rows.length)
+    .sort(
+      (a, b) =>
+        a.booking.dueOn.localeCompare(b.booking.dueOn) ||
+        a.booking.act.localeCompare(b.booking.act),
+    );
   function values(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     return Object.fromEntries(new FormData(event.currentTarget));
@@ -171,6 +291,19 @@ export default function Bookings({
       {!payments ? (
         <>
           <div className="row booking-toolbar">
+            <button
+              className="link"
+              onClick={() => void load()}
+              disabled={busy}
+            >
+              Refresh
+            </button>
+            {updated && <small className="fine">Updated {updated}</small>}
+            {days.includes(today()) && selectedDate !== today() && (
+              <button className="secondary" onClick={() => chooseDate(today())}>
+                Tonight
+              </button>
+            )}
             <button
               className="link"
               onClick={() => setManagement(!management)}
@@ -198,7 +331,7 @@ export default function Bookings({
                 checked={past}
                 onChange={(e) => {
                   setPast(e.target.checked);
-                  setSelectedDate("");
+                  chooseDate("");
                 }}
               />
               Past dates
@@ -221,7 +354,7 @@ export default function Bookings({
                     <button
                       className="booking-day-summary"
                       aria-expanded={false}
-                      onClick={() => setSelectedDate(date)}
+                      onClick={() => chooseDate(date)}
                     >
                       <span>
                         <strong>{bookingDate(date)}</strong>
@@ -251,7 +384,7 @@ export default function Bookings({
                 <button
                   className="booking-day-summary"
                   aria-expanded={true}
-                  onClick={() => setSelectedDate("")}
+                  onClick={() => chooseDate("")}
                 >
                   <span>
                     <strong>{bookingDate(selectedDate)}</strong>
@@ -265,6 +398,52 @@ export default function Bookings({
                 <div className="booking-day-body">
                   {management ? (
                     <>
+                      {dated.some((b) => !b.cancelled) && (
+                        <details className="panel">
+                          <summary>Staff access for this night</summary>
+                          <form
+                            className="booking-form"
+                            onSubmit={(e) => {
+                              const fields = values(e);
+                              void act("staffLink", undefined, {
+                                day: selectedDate,
+                                name: fields.name,
+                              });
+                            }}
+                          >
+                            <p className="fine">
+                              Share a link for this date only. Creating a new
+                              link replaces the previous one. It expires the day
+                              after the performance, or the day after creation
+                              for past bookings.
+                            </p>
+                            <label>
+                              Staff member’s full name
+                              <input
+                                name="name"
+                                required
+                                minLength={2}
+                                maxLength={100}
+                              />
+                            </label>
+                            <div className="row">
+                              <button disabled={busy}>Copy staff link</button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={busy}
+                                onClick={() =>
+                                  void act("revokeStaff", undefined, {
+                                    day: selectedDate,
+                                  })
+                                }
+                              >
+                                Revoke staff link
+                              </button>
+                            </div>
+                          </form>
+                        </details>
+                      )}
                       {dated.some((b) => !b.cancelled && !b.confirmedAt) &&
                         selectedDate <= today() && (
                           <form
@@ -291,7 +470,30 @@ export default function Bookings({
                               <input type="checkbox" required />
                               All acts performed as agreed
                             </label>
-                            <button disabled={busy}>Confirm this date</button>
+                            <button
+                              disabled={
+                                busy ||
+                                dated.some(
+                                  (b) =>
+                                    !b.cancelled &&
+                                    !b.confirmedAt &&
+                                    b.members.length !== b.expectedMembers,
+                                )
+                              }
+                            >
+                              Confirm this date
+                            </button>
+                            {dated.some(
+                              (b) =>
+                                !b.cancelled &&
+                                !b.confirmedAt &&
+                                b.members.length !== b.expectedMembers,
+                            ) && (
+                              <p className="fine">
+                                Open each act with missing registrations and
+                                record who played.
+                              </p>
+                            )}
                           </form>
                         )}
                       {dated.map((booking) => (
@@ -317,7 +519,16 @@ export default function Bookings({
                                 disabled={busy}
                                 onClick={() => void act("link", booking.id)}
                               >
-                                Copy booking link
+                                Copy musician link
+                              </button>
+                              <button
+                                className="link"
+                                disabled={busy}
+                                onClick={() =>
+                                  void act("contactLink", booking.id)
+                                }
+                              >
+                                Copy private band contact link
                               </button>
                             </div>
                             <p>
@@ -333,10 +544,17 @@ export default function Bookings({
                               <p className="error">{booking.sourceError}</p>
                             )}
                             <Schedule booking={booking} />
+                            <BookingChecklist booking={booking} />
                             <p>
-                              {money(booking.fee)} per musician ·{" "}
-                              {money(booking.fee * booking.expectedMembers)}{" "}
-                              total
+                              {booking.fee ? (
+                                <>
+                                  {money(booking.fee)} per musician ·{" "}
+                                  {money(booking.fee * booking.expectedMembers)}{" "}
+                                  total
+                                </>
+                              ) : (
+                                "Fee to confirm"
+                              )}
                             </p>
                             <ul className="booking-member-list">
                               {booking.members.map((member) => (
@@ -350,7 +568,42 @@ export default function Bookings({
                                   </span>
                                   <span className="booking-member-status">
                                     {member.status} · {member.paymentType}
-                                    {member.contractId &&
+                                    {member.signingDeadline &&
+                                      member.signingDeadline < today() &&
+                                      member.status ===
+                                        "Artist signature needed" && (
+                                        <form
+                                          onSubmit={(e) => {
+                                            const fields = values(e);
+                                            void act("reissue", booking.id, {
+                                              memberId: member.id,
+                                              returnBy: fields.returnBy,
+                                            });
+                                          }}
+                                        >
+                                          <label>
+                                            New signing deadline
+                                            <input
+                                              type="date"
+                                              name="returnBy"
+                                              min={today()}
+                                              defaultValue={signingDeadline(
+                                                booking.date,
+                                              )}
+                                              required
+                                            />
+                                          </label>
+                                          <button
+                                            className="secondary"
+                                            disabled={busy}
+                                          >
+                                            Reissue contract
+                                          </button>
+                                        </form>
+                                      )}
+                                    {member.signingDeadline &&
+                                      member.signingDeadline >= today() &&
+                                      member.contractId &&
                                       member.status ===
                                         "Artist signature needed" && (
                                         <button
@@ -374,8 +627,7 @@ export default function Bookings({
                               ))}
                             </ul>
                             {!booking.cancelled &&
-                              booking.approvedVersion !== booking.version &&
-                              !booking.confirmedAt && (
+                              booking.approvedVersion !== booking.version && (
                                 <CompanyApproval
                                   booking={booking}
                                   busy={busy}
@@ -397,7 +649,7 @@ export default function Bookings({
                               </p>
                             )}
                             {!booking.cancelled &&
-                              booking.approvedVersion === booking.version &&
+                              !booking.sourceError &&
                               booking.date <= today() &&
                               !booking.members.some((m) => m.paymentId) && (
                                 <details className="booking-form">
@@ -497,7 +749,13 @@ export default function Bookings({
                             Confirmed by
                             <input
                               value={employee}
-                              onChange={(e) => setEmployee(e.target.value)}
+                              onChange={(e) => {
+                                setEmployee(e.target.value);
+                                sessionStorage.setItem(
+                                  "stagebook-employee",
+                                  e.target.value,
+                                );
+                              }}
                               autoComplete="name"
                               placeholder="Your full name"
                               minLength={2}
@@ -514,7 +772,9 @@ export default function Bookings({
                           0,
                           booking.expectedMembers - booking.members.length,
                         );
-                        const confirmed = Boolean(booking.confirmedAt);
+                        const confirmed =
+                          Boolean(booking.confirmedAt) &&
+                          booking.members.every((m) => m.attendance);
                         const allPlayed =
                           confirmed &&
                           booking.members.every(
@@ -527,7 +787,6 @@ export default function Bookings({
                           !confirmed &&
                           !booking.cancelled &&
                           !booking.sourceError &&
-                          approved &&
                           selectedDate <= today() &&
                           employee.trim().length >= 2 &&
                           !missing;
@@ -613,7 +872,7 @@ export default function Bookings({
                                       the manager.
                                     </p>
                                   )}
-                                  {!approved && !confirmed && (
+                                  {!approved && (
                                     <details className="booking-form night-contract">
                                       <summary>
                                         Confirm, sign and send contracts
@@ -641,12 +900,8 @@ export default function Bookings({
                                         ` by ${booking.approvedBy}`}{" "}
                                       ·{" "}
                                       {
-                                        booking.members.filter(
-                                          (m) =>
-                                            m.status !==
-                                              "Artist signature needed" &&
-                                            m.contractId,
-                                        ).length
+                                        booking.members.filter((m) => m.signed)
+                                          .length
                                       }
                                       /{booking.members.length} artist
                                       signatures
@@ -686,14 +941,25 @@ export default function Bookings({
                                     <p className="fine">
                                       Confirm on the performance date.
                                     </p>
-                                  ) : (
-                                    !approved && (
-                                      <p className="fine">
-                                        Company approval needed before
-                                        confirmation.
-                                      </p>
-                                    )
-                                  )}
+                                  ) : null}
+                                  {booking.date <= today() &&
+                                    !booking.sourceError &&
+                                    !booking.members.some(
+                                      (m) => m.paymentId,
+                                    ) && (
+                                      <AttendanceEditor
+                                        booking={booking}
+                                        busy={busy}
+                                        by={employee}
+                                        onSave={(data) =>
+                                          void act(
+                                            "attendance",
+                                            booking.id,
+                                            data,
+                                          )
+                                        }
+                                      />
+                                    )}
                                 </>
                               )}
                             </div>
@@ -731,21 +997,13 @@ export default function Bookings({
             ))}
           </div>
           <p className="fine">
-            Select payments only after processing the actual transfers or cash
-            payments.
+            Process the payment using the musician’s chosen method, then record
+            it here.
           </p>
           <div className="stats">
             <div className="stat">
-              <span>Pending</span>
-              <strong>
-                {money(
-                  obligations
-                    .filter(
-                      (o) => !["Paid", "Cancelled"].includes(o.member.status),
-                    )
-                    .reduce((sum, o) => sum + o.booking.fee, 0),
-                )}
-              </strong>
+              <span>Known pending fees</span>
+              <strong>{money(pendingCost)}</strong>
             </div>
             <div className="stat">
               <span>Ready</span>
@@ -753,99 +1011,142 @@ export default function Bookings({
                 {money(
                   obligations
                     .filter((o) => o.member.status === "Ready to pay")
-                    .reduce((sum, o) => sum + o.booking.fee, 0),
+                    .reduce((sum, o) => sum + o.member.amount, 0),
                 )}
               </strong>
             </div>
           </div>
-          {filtered.map(({ booking, member, key }) => (
-            <article className="panel" key={key}>
+          {unconfirmedLineups > 0 && filter === "Pending" && (
+            <p className="fine">
+              {unconfirmedLineups}{" "}
+              {unconfirmedLineups === 1
+                ? "booking still needs"
+                : "bookings still need"}{" "}
+              a confirmed lineup before the full cost can be calculated.
+            </p>
+          )}
+          {["Pending", "Needs attention", "Overdue"].includes(filter) &&
+            unregistered.length > 0 && (
+              <details className="panel">
+                <summary>
+                  Waiting for{" "}
+                  {unregistered.reduce((sum, entry) => sum + entry.missing, 0)}{" "}
+                  registrations · {money(missingCost)} in known fees
+                </summary>
+                <ul className="booking-checklist">
+                  {unregistered.map(({ booking, missing }) => (
+                    <li key={booking.id}>
+                      <strong>
+                        {booking.act} · {bookingDate(booking.date)}
+                      </strong>
+                      <span>
+                        {missing} missing ·{" "}
+                        {booking.fee
+                          ? money(booking.fee * missing)
+                          : "Fee to confirm"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          {groups.map(({ booking, rows }) => (
+            <section className="panel payment-booking" key={booking.id}>
               <div className="section-title">
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    disabled={busy || member.status !== "Ready to pay"}
-                    checked={selected.includes(key)}
-                    onChange={(e) =>
-                      setSelected((current) =>
-                        e.target.checked
-                          ? [...current, key]
-                          : current.filter((v) => v !== key),
-                      )
-                    }
-                  />
-                  <strong>{member.name}</strong>
-                </label>
-                <strong>{money(booking.fee)}</strong>
+                <div>
+                  <h3>{booking.act}</h3>
+                  <p className="fine">
+                    {bookingDate(booking.date)} · Due{" "}
+                    {bookingDate(booking.dueOn)}
+                  </p>
+                </div>
+                <strong>
+                  {money(rows.reduce((sum, row) => sum + row.member.amount, 0))}
+                </strong>
               </div>
-              <p>
-                {booking.act} · {booking.date} · {member.paymentType}
-              </p>
-              <p>
-                {member.status} · Due {booking.dueOn}
-                {booking.dueOn < today() &&
-                  member.status !== "Paid" &&
-                  " · Overdue"}
-              </p>
               <div className="row">
                 <button
                   className="link"
                   disabled={busy}
-                  onClick={() => void showAccounts(booking.id)}
+                  onClick={() => {
+                    if (accounts[booking.id])
+                      setAccounts(({ [booking.id]: _, ...rest }) => rest);
+                    else void showAccounts(booking.id);
+                  }}
                 >
-                  Show payment details
+                  {accounts[booking.id]
+                    ? "Hide payment details"
+                    : "Show payment details"}
                 </button>
-                <button
-                  className="link"
-                  disabled={busy}
-                  onClick={() =>
-                    setSelected((current) =>
-                      Array.from(
-                        new Set([
+                {rows.some((row) => row.member.status === "Ready to pay") && (
+                  <button
+                    className="link"
+                    disabled={busy}
+                    onClick={() =>
+                      setSelected((current) => [
+                        ...new Set([
                           ...current,
-                          ...obligations
+                          ...rows
                             .filter(
-                              (o) =>
-                                o.booking.id === booking.id &&
-                                o.member.status === "Ready to pay",
+                              (row) => row.member.status === "Ready to pay",
                             )
-                            .map((o) => o.key),
+                            .map((row) => row.key),
                         ]),
-                      ),
-                    )
-                  }
-                >
-                  Select ready band members
-                </button>
+                      ])
+                    }
+                  >
+                    Select ready musicians
+                  </button>
+                )}
               </div>
-              {accounts[booking.id]
-                ?.filter((a) => a.memberId === member.id)
-                .map((account) => (
-                  <p className="booking-account" key={account.memberId}>
-                    {account.email}
-                    <br />
-                    {account.iban
-                      ? "IBAN " + account.iban
-                      : "Reg. " +
-                        (account.registration || "") +
-                        " · Account " +
-                        (account.account || "")}
-                    <br />
-                    {account.phone && (
-                      <>
-                        Phone / Mobilepay · {account.phone}
-                        <br />
-                      </>
-                    )}
-                    {account.payee}
-                    {account.cvr && <> · CVR {account.cvr}</>}
+              {rows.map(({ member, key }) => (
+                <article className="payment-person" key={key}>
+                  <div className="section-title">
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        disabled={busy || member.status !== "Ready to pay"}
+                        checked={selected.includes(key)}
+                        onChange={(e) =>
+                          setSelected((current) =>
+                            e.target.checked
+                              ? [...current, key]
+                              : current.filter((v) => v !== key),
+                          )
+                        }
+                      />
+                      <strong>{member.name}</strong>
+                    </label>
+                    <strong>
+                      {member.amount ? money(member.amount) : "Fee to confirm"}
+                    </strong>
+                  </div>
+                  <p>{member.paymentType}</p>
+                  <p>
+                    {member.status} · Due {booking.dueOn}
+                    {booking.dueOn < today() &&
+                      member.status !== "Paid" &&
+                      " · Overdue"}
                   </p>
-                ))}
-            </article>
+                  {accounts[booking.id]
+                    ?.filter((a) => a.memberId === member.id)
+                    .map((account) => (
+                      <div className="booking-account" key={account.memberId}>
+                        <PaymentDetails
+                          method={member.paymentType}
+                          account={account}
+                        />
+                      </div>
+                    ))}
+                </article>
+              ))}
+            </section>
           ))}
-          {loaded && !filtered.length && (
-            <p className="panel">No payments in this view.</p>
-          )}
+          {loaded &&
+            !filtered.length &&
+            (filter === "Paid" || !unregistered.length) && (
+              <p className="panel">No payments in this view.</p>
+            )}
           {selected.length > 0 && (
             <form
               className="panel payment-confirm"
@@ -863,11 +1164,23 @@ export default function Bookings({
               }}
             >
               <h2>Confirm {selected.length} processed payments</h2>
+              <ul className="booking-checklist">
+                {obligations
+                  .filter((row) => selected.includes(row.key))
+                  .map(({ booking, member, key }) => (
+                    <li key={key}>
+                      <span>
+                        {member.name} · {booking.act}
+                      </span>
+                      <strong>{money(member.amount)}</strong>
+                    </li>
+                  ))}
+              </ul>
               <p>
                 {money(
                   obligations
                     .filter((o) => selected.includes(o.key))
-                    .reduce((sum, o) => sum + o.booking.fee, 0),
+                    .reduce((sum, o) => sum + o.member.amount, 0),
                 )}{" "}
                 total
               </p>
@@ -943,6 +1256,7 @@ function CompanyApproval({
     accepted: boolean;
     fee: number;
     dueOn: FormDataEntryValue;
+    returnBy: FormDataEntryValue;
   }) => void;
 }) {
   return (
@@ -956,6 +1270,7 @@ function CompanyApproval({
           accepted: true,
           fee: Math.round(Number(fields.fee) * 100),
           dueOn: fields.dueOn,
+          returnBy: fields.returnBy,
         });
       }}
     >
@@ -989,6 +1304,16 @@ function CompanyApproval({
         </label>
       </div>
       <label>
+        Signing deadline
+        <input
+          name="returnBy"
+          type="date"
+          required
+          min={today()}
+          defaultValue={signingDeadline(booking.date)}
+        />
+      </label>
+      <label>
         Company signer’s full name
         <input name="signer" required minLength={2} maxLength={300} />
       </label>
@@ -1007,5 +1332,131 @@ function CompanyApproval({
         Confirm, sign and send contracts
       </button>
     </form>
+  );
+}
+
+function BookingChecklist({ booking }: { booking: View }) {
+  const registered = booking.members.length;
+  const signed = booking.members.filter((m) => m.signed).length;
+  const paid = booking.members.filter((m) => m.status === "Paid").length;
+  const recorded = booking.members.filter((m) => m.attendance).length;
+  const company = booking.approvedVersion === booking.version;
+  const next = booking.cancelled
+    ? "Cancelled"
+    : booking.sourceError
+      ? "Fix the booking row in Google Sheets"
+      : !booking.performance
+        ? "Ask the band contact for the schedule"
+        : registered !== booking.expectedMembers
+          ? "Share the musician registration link"
+          : !company
+            ? "Sign for the venue and send the contracts"
+            : signed < registered
+              ? "Follow up on unsigned contracts"
+              : recorded < registered
+                ? "Record who performed"
+                : booking.members.some((m) => m.status === "Ready to pay")
+                  ? "Process the ready payments"
+                  : paid < registered
+                    ? "Review any performance exceptions"
+                    : "Complete";
+  return (
+    <div className="booking-progress">
+      <ul className="booking-checklist">
+        <li>
+          <span>Schedule</span>
+          <strong>{booking.performance ? "Ready" : "Waiting"}</strong>
+        </li>
+        <li>
+          <span>Musicians registered</span>
+          <strong>
+            {registered}/{booking.expectedMembers}
+          </strong>
+        </li>
+        <li>
+          <span>Company signature</span>
+          <strong>{company ? "Signed" : "Waiting"}</strong>
+        </li>
+        <li>
+          <span>Artist signatures</span>
+          <strong>
+            {signed}/{booking.expectedMembers}
+          </strong>
+        </li>
+        <li>
+          <span>Attendance recorded</span>
+          <strong>
+            {recorded}/{booking.expectedMembers}
+          </strong>
+        </li>
+        <li>
+          <span>Payments recorded</span>
+          <strong>
+            {paid}/{booking.expectedMembers}
+          </strong>
+        </li>
+      </ul>
+      <p className="fine">{next}</p>
+    </div>
+  );
+}
+
+function PaymentDetails({
+  method,
+  account,
+}: {
+  method: View["members"][number]["paymentType"];
+  account: Account;
+}) {
+  const [status, setStatus] = useState("");
+  const details =
+    method === "Bank transfer"
+      ? account.iban ||
+        [account.registration, account.account].filter(Boolean).join(" ")
+      : method === "Mobilepay"
+        ? account.phone
+        : "";
+  async function copy() {
+    if (!details) return;
+    try {
+      await navigator.clipboard.writeText(details);
+      setStatus("Copied");
+    } catch {
+      setStatus("Select the details to copy.");
+    }
+  }
+  return (
+    <>
+      <p>
+        <strong>{account.name}</strong> · {account.payee}
+        {account.cvr && " · CVR " + account.cvr}
+      </p>
+      {method === "Cash" ? (
+        <p>Cash payment</p>
+      ) : details ? (
+        <div className="row">
+          <span>
+            {method === "Mobilepay"
+              ? "Mobilepay " + details
+              : account.iban
+                ? "IBAN " + details
+                : "Reg. " +
+                  account.registration +
+                  " · Account " +
+                  account.account}
+          </span>
+          <button className="link" onClick={() => void copy()}>
+            Copy details
+          </button>
+        </div>
+      ) : (
+        <p>Payment details missing. Contact the musician.</p>
+      )}
+      {status && (
+        <p className="fine" role="status">
+          {status}
+        </p>
+      )}
+    </>
   );
 }

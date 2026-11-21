@@ -1278,3 +1278,46 @@ input[type="time"]::-webkit-date-and-time-value {
     column-gap: 20px;
   }
 }
+
+.booking-progress {
+  border-block: 1px solid var(--rule);
+  padding-block: .65rem;
+}
+.booking-progress > p {
+  margin-block: .5rem 0;
+}
+.booking-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.booking-checklist li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .75rem;
+  padding-block: .3rem;
+}
+.booking-checklist strong {
+  text-align: end;
+}
+.night-shift {
+  padding-block: 2rem 4rem;
+}
+.night-shift .booking-act-card {
+  margin-block: .75rem;
+}
+.payment-booking h3 {
+  margin-block: 0 .25rem;
+}
+.payment-booking .section-title {
+  align-items: baseline;
+}
+.payment-person {
+  border-top: 1px solid var(--rule);
+  margin-top: .65rem;
+  padding-block: .65rem 0;
+}
+.payment-person > p {
+  margin-top: .25rem;
+}

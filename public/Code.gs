@@ -597,12 +597,14 @@ function syncBookingRows(book,state,props) {
       booking.operations = {ticketPrice:sourceRow[3],entranceIncome:sourceRow[4],guestCount:sourceRow[7],booker:sourceRow[11],infoSent:sourceRow[12],prReceived:sourceRow[13],facebook:sourceRow[14],website:sourceRow[15],winterJazz:sourceRow[16],instagram:sourceRow[17]};
     }
     const url = "https://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:"+id,props);
+    const contactUrl = bookingContactUrl(booking,props);
     const mailId = "invitation:"+id+":"+(booking.sourceVersion || 1);
     if (!cancelled && date >= Utilities.formatDate(new Date(),"Europe/Copenhagen","yyyy-MM-dd") && !state.bookingMail.some(mail=>mail.id===mailId)) {
       state.bookingMail.push({id:mailId,bookingId:id,sourceVersion:booking.sourceVersion || 1,to:contactEmail,kind:"invitation",status:"pending",createdAt:new Date().toISOString(),
         subject:"Booking details needed · "+act+" · "+date,
-        body:"You are booked at "+state.venue.name+" on "+date+".\n\n"+url+
-          "\n\nPlease complete the act schedule, lineup and agreed fee, and forward this booking link to EVERY performing musician. Each musician can open this link and register personal and payment details directly before playing. The company will approve the agreement and send individual contracts to sign.\n\nQuestions: "+state.venue.email});
+        body:"You are booked at "+state.venue.name+" on "+date+".\n\nComplete the schedule, lineup and fee using your private band contact link:\n"+contactUrl+
+          "\n\nForward this musician registration link to EVERY performing musician, and submit your own details too if you are playing:\n"+url+
+          "\n\nEach musician can register directly before playing. The venue will approve the agreement and send individual contracts.\n\nQuestions: "+state.venue.email});
     }
     const methods = Array.from(new Set(booking.members.map(member => member.paymentType || booking.paymentType)));
     sheet.getRange(index+2,modern ? 20 : 6).setValue(methods.length > 1 ? "Mixed" : methods[0] || "");
@@ -620,13 +622,17 @@ function writeBookingState(book,state) {
   state.revision++;
   writeWorkbook(book,state);
 }
+function bookingContactUrl(booking,props) {
+  return "https://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:contact:"+booking.id+":"+(booking.sourceVersion || 1),props);
+}
 function queueBookingReminders(state,props) {
   const now = new Date();
   const day = Utilities.formatDate(now,"Europe/Copenhagen","yyyy-MM-dd");
   state.bookingMail = state.bookingMail || [];
   for (const booking of state.bookings || []) {
-    if (booking.cancelled || booking.sourceError || booking.date < day || Date.parse(booking.date+"T12:00:00Z") - now.getTime() > 7*86400000) continue;
+    if (booking.cancelled || booking.sourceError || Date.parse(booking.date+"T12:00:00Z") - now.getTime() > 7*86400000) continue;
     if (booking.approvedVersion !== booking.version) {
+      if (booking.date < day) continue;
       if (booking.members.length===booking.expectedMembers && booking.performance) continue;
       const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && ["invitation","reminder"].includes(m.kind) && !m.memberId).pop();
       if (previous && (previous.status!=="sent" || now.getTime()-Date.parse(previous.sentAt || previous.createdAt)<86400000)) continue;
@@ -634,18 +640,18 @@ function queueBookingReminders(state,props) {
       if (state.bookingMail.some(m=>m.id===id)) continue;
       state.bookingMail.push({id,bookingId:booking.id,to:booking.contactEmail,kind:"reminder",status:"pending",createdAt:now.toISOString(),
         subject:"Registration reminder · "+booking.act+" · "+booking.date,
-        body:"Every performing musician must register before playing. "+booking.members.length+" of "+booking.expectedMembers+" are registered. Please also complete the act schedule.\n\nhttps://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:"+booking.id,props)});
+        body:"Every performing musician must register before playing. "+booking.members.length+" of "+booking.expectedMembers+" are registered. Share the musician link:\nhttps://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:"+booking.id,props)+"\n\nComplete the schedule using your private link:\n"+bookingContactUrl(booking,props)});
     } else {
       for (const member of booking.members) {
         const invite = state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt);
-        if (!invite) continue;
+        if (!invite || invite.offer.returnBy < day) continue;
         const previous = state.bookingMail.filter(m=>m.bookingId===booking.id && m.memberId===member.id).pop();
         if (previous && (previous.status!=="sent" || now.getTime()-Date.parse(previous.sentAt || previous.createdAt)<86400000)) continue;
         const id = "sign-reminder:"+invite.id+":"+day;
         if (state.bookingMail.some(m=>m.id===id)) continue;
         state.bookingMail.push({id,bookingId:booking.id,memberId:member.id,to:member.email,kind:"reminder",status:"pending",createdAt:now.toISOString(),
           subject:"Please sign your contract · "+booking.act+" · "+booking.date,
-          body:"Please review and sign your agreement before the performance.\n\nhttps://dmf-eta.vercel.app/register/"+bookingHmac("stagebook-booking-contract:"+invite.id,props)});
+          body:"Please review and sign your agreement by "+invite.offer.returnBy+".\n\nhttps://dmf-eta.vercel.app/register/"+bookingHmac("stagebook-booking-contract:"+invite.id,props)});
       }
     }
   }
@@ -665,14 +671,15 @@ function processBookingMail(book,state,props) {
     const booking = (state.bookings || []).find(b=>b.id===mail.bookingId);
     if (!booking || booking.cancelled || booking.sourceError) { mail.status="failed"; mail.error="Booking is cancelled or needs attention."; delivery.failed++; continue; }
     if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="superseded"; mail.error="Booking changed. Use its current invitation."; continue; }
+    const day = Utilities.formatDate(new Date(),"Europe/Copenhagen","yyyy-MM-dd");
     if (mail.kind==="reminder" && mail.memberId) {
       const member = booking.members.find(m=>m.id===mail.memberId);
       const invite = member && state.invites.find(i=>i.id===member.contractId && !i.revoked && !i.signedAt && i.bookingVersion===booking.version);
-      if (!invite) { mail.status="superseded"; mail.error="Signature no longer needed."; continue; }
+      if (!invite || (invite.offer && invite.offer.returnBy < day)) { mail.status="superseded"; mail.error="Signature no longer needed."; continue; }
     }
     if (mail.kind==="contract") {
       const invite = state.invites.find(i=>i.id===mail.id.slice(9));
-      if (!invite || invite.revoked || invite.signedAt || invite.bookingVersion!==booking.version) { mail.status="superseded"; mail.error="Agreement is no longer awaiting signature."; continue; }
+      if (!invite || invite.revoked || invite.signedAt || invite.bookingVersion!==booking.version || (invite.offer && invite.offer.returnBy < day)) { mail.status="superseded"; mail.error="Agreement is no longer awaiting signature."; continue; }
     }
     if (mail.kind==="verification" && Date.now()-Date.parse(mail.createdAt)>30*60000) { mail.status="failed"; mail.error="Verification expired. Request a new link."; delivery.failed++; continue; }
     const key="stagebook-booking-mail:"+mail.id;
@@ -735,13 +742,13 @@ function refreshBookingProjection(book,state) {
     const booking=(state.bookings || []).find(b=>b.id===String(row[22]));
     if (!booking) return;
     const paid=booking.members.length===booking.expectedMembers && booking.members.length>0 && booking.members.every(m=>m.paymentId && (state.payments || []).some(p=>p.id===m.paymentId && !p.voidReason));
-    const total=booking.fee*booking.expectedMembers/100;
+    const total=booking.fee ? booking.fee*booking.expectedMembers/100 : "";
     const entrance=row[4]==="" ? null : Number(row[4]);
     const ratio=entrance!==null && Number.isFinite(entrance) && total>0 ? entrance/total : "";
     const contact=(state.musicians || []).find(m=>m.email.toLowerCase()===booking.contactEmail.toLowerCase() && booking.members.some(member=>member.musicianId===m.id));
     sheet.getRange(index+2,2).setValue(paid);
-    sheet.getRange(index+2,6,1,2).setValues([[total,booking.expectedMembers]]);
+    sheet.getRange(index+2,6,1,2).setValues([[total,booking.performance ? booking.expectedMembers : ""]]);
     sheet.getRange(index+2,9).setValue(ratio);
-    if (contact && contact.phone) sheet.getRange(index+2,11).setValue(String(contact.phone));
+    sheet.getRange(index+2,11).setValue(contact?.phone ? String(contact.phone) : "");
   });
 }
