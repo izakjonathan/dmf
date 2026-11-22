@@ -111,6 +111,7 @@ export function Brand() {
 }
 export default function Dashboard() {
   const [reviewId, setReviewId] = useState("");
+  const [focusBooking, setFocusBooking] = useState("");
   const [page, setPage] = useState<Page>("Bookings");
   const [mode, setMode] = useState<
     "loading" | "connect" | "setup" | "login" | "app"
@@ -184,7 +185,11 @@ export default function Dashboard() {
     }
   }, [loadWorkspace]);
   useEffect(() => {
-    setReviewId(new URLSearchParams(location.search).get("review") || "");
+    const params = new URLSearchParams(location.search);
+    setReviewId(params.get("review") || "");
+    const paymentBooking = params.get("bookingPayments");
+    setFocusBooking(paymentBooking || params.get("booking") || "");
+    if (paymentBooking) setPage("Payments");
     void start();
   }, [start]);
   useEffect(() => {
@@ -217,9 +222,10 @@ export default function Dashboard() {
     };
   }, [actionsOpen]);
   function go(next: Page) {
-    if (reviewId) {
+    if (reviewId || focusBooking) {
       window.history.replaceState(null, "", location.pathname);
       setReviewId("");
+      setFocusBooking("");
     }
     navigation.current?.hidePopover();
     setActionsOpen(false);
@@ -545,7 +551,11 @@ export default function Dashboard() {
             </p>
           )}
           {page === "Bookings" &&
-            (reviewId ? <BookingReview id={reviewId} /> : <Bookings />)}
+            (reviewId ? (
+              <BookingReview id={reviewId} />
+            ) : (
+              <Bookings focusBooking={focusBooking} />
+            ))}
           {page === "Overview" && (
             <>
               <div className="stats">
@@ -621,7 +631,11 @@ export default function Dashboard() {
           )}
           {page === "Payments" && (
             <section aria-label="Payment history">
-              <Bookings payments onPaid={() => void loadWorkspace()} />
+              <Bookings
+                payments
+                focusBooking={focusBooking}
+                onPaid={() => void loadWorkspace()}
+              />
               <div className="section-title booking-date">
                 <h2>Payment history</h2>
                 <button
@@ -660,12 +674,14 @@ export default function Dashboard() {
           )}
           {page === "Contracts" && (
             <section className="panel guide">
-              <h2>Signed contracts</h2>
+              <Bookings contracts />
+              <h2>Contract copies</h2>
               {data.contracts.length ? (
                 data.contracts.map((contract) => (
                   <div className="invite-row" key={contract.id}>
                     <span>
-                      {contract.performer} · {contract.date}
+                      {contract.performer} · {contract.date} ·{" "}
+                      {contract.finalized ? "Both signed" : "Musician signed"}
                     </span>
                     <button
                       className="secondary"

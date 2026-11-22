@@ -17,13 +17,19 @@ type Details = {
     | "fee"
     | "paymentType"
     | "dueOn"
-  > & { registered: number; approved: boolean };
+  > & {
+    registered: number;
+    approved: boolean;
+    artistFirst?: boolean;
+    venueFee?: boolean;
+  };
   venue: {
     name: string;
     email: string;
     legalName: string;
     collectCpr: boolean;
   };
+  promotion?: Booking["promotion"];
   email?: string;
   isContact?: boolean;
   sharedPath?: string;
@@ -84,7 +90,14 @@ export default function BookingRegistration({ token }: { token: string }) {
         ? {
             performance: fields,
             expectedMembers: fields.expectedMembers,
-            fee: Math.round(Number(fields.fee) * 100),
+            fee: details!.booking.venueFee
+              ? details!.booking.fee
+              : Math.round(Number(fields.fee) * 100),
+            promotion: {
+              bio: fields.bio,
+              photoUrl: fields.photoUrl,
+              website: fields.website,
+            },
           }
         : action === "register"
           ? {
@@ -117,7 +130,7 @@ export default function BookingRegistration({ token }: { token: string }) {
       setMessage(
         result.message ||
           (action === "register"
-            ? "Your details are saved for this booking. A contract will arrive after the company approves the agreement."
+            ? "Your details are saved for this booking. Check your email for the signing link once the lineup is complete."
             : "Act details saved. Every performing musician must also register individually."),
       );
     } catch (e) {
@@ -167,9 +180,9 @@ export default function BookingRegistration({ token }: { token: string }) {
             </p>
             {details.booking.approved ? (
               <div className="panel">
-                <h2>Agreement approved</h2>
+                <h2>Registration complete</h2>
                 <p>
-                  Your contract has been sent separately by email. Contact{" "}
+                  Check your inbox for your individual signing request. Contact{" "}
                   {details.venue.email} if any details need changing.
                 </p>
               </div>
@@ -200,23 +213,59 @@ export default function BookingRegistration({ token }: { token: string }) {
                           )}
                         />
                       </label>
-                      <label>
-                        Agreed fee per musician (DKK)
-                        <input
-                          name="fee"
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          required
-                          defaultValue={
-                            details.booking.fee ? details.booking.fee / 100 : ""
-                          }
-                        />
-                      </label>
+                      {details.booking.venueFee ? (
+                        <p>
+                          Agreed fee per musician · {money(details.booking.fee)}
+                        </p>
+                      ) : (
+                        <label>
+                          Agreed fee per musician (DKK)
+                          <input
+                            name="fee"
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            required
+                            defaultValue={
+                              details.booking.fee
+                                ? details.booking.fee / 100
+                                : ""
+                            }
+                          />
+                        </label>
+                      )}
                     </div>
                     <ArtistPerformanceFields
                       value={details.booking.performance}
                     />
+                    <label>
+                      Act bio for promotion (optional)
+                      <textarea
+                        name="bio"
+                        maxLength={4000}
+                        defaultValue={details.promotion?.bio}
+                      />
+                    </label>
+                    <div className="grid">
+                      <label>
+                        Press photo link (optional)
+                        <input
+                          name="photoUrl"
+                          type="url"
+                          maxLength={1000}
+                          defaultValue={details.promotion?.photoUrl}
+                        />
+                      </label>
+                      <label>
+                        Website or social link (optional)
+                        <input
+                          name="website"
+                          type="url"
+                          maxLength={1000}
+                          defaultValue={details.promotion?.website}
+                        />
+                      </label>
+                    </div>
                     <div className="row">
                       <button disabled={busy}>Save act details</button>
                       <button
@@ -239,7 +288,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                     <h2>Thank you</h2>
                     <p>
                       Your details are saved. Your contract will be sent to your
-                      email after the venue approves the booking.
+                      email once the booking details are ready.
                     </p>
                     <p className="fine">
                       Share the musician registration link with everyone

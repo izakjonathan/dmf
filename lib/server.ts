@@ -107,6 +107,15 @@ export async function sheets(action: string, data: object = {}) {
       "The booking row changed or has an issue. Sync the booking and review it again.",
       409,
     );
+  if (!result.ok && result.error === "BOOKING_INPUT")
+    throw new RequestError(
+      result.message || "Check the booking fields and try again.",
+    );
+  if (!result.ok && ["createBooking", "ticketSales"].includes(action))
+    throw new RequestError(
+      "Update the existing Apps Script deployment to enable booking and ticket entry.",
+      503,
+    );
   if (!result.ok && action === "sheetBookingReview")
     throw new RequestError(
       "Update the existing Apps Script deployment before signing from Sheets.",
@@ -135,6 +144,19 @@ export async function sheets(action: string, data: object = {}) {
 }
 export function registrationToken(id: string) {
   return sign("stagebook-registration:" + id, process.env.AUTH_SECRET!);
+}
+
+export function bookingSigningCredentials(id: string) {
+  const raw = bookingContractToken(id);
+  return { hash: hash(raw), url: "https://dmf-eta.vercel.app/register/" + raw };
+}
+
+export function bookingReceiptUrl(id: string) {
+  return (
+    "https://dmf-eta.vercel.app/register/" +
+    bookingToken("receipt:" + id) +
+    "?receipt=1"
+  );
 }
 
 export function paymentSigningToken(id: string) {
@@ -179,7 +201,7 @@ export async function metadata(): Promise<{ initialized: boolean }> {
 }
 export async function writeState(
   state: Workspace,
-  options: { sheetBookingId?: string } = {},
+  options: { sheetBookingId?: string; sheetBookingIds?: string[] } = {},
 ) {
   const next = { ...state, revision: state.revision + 1 };
   await sheets("write", { state: next, expected: state.revision, ...options });

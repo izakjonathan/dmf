@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { money, type ArtistPerformance } from "@/lib/model";
+import {
+  money,
+  type ArtistPerformance,
+  type ContractOffer,
+  type SignedContract,
+} from "@/lib/model";
+import { ContractTerms } from "./Contract";
 
 type Review = {
   act: string;
@@ -14,6 +20,13 @@ type Review = {
   members: Array<{ id: string; name: string; email: string; method: string }>;
   template: { url: string };
   review: string;
+  countersign?: boolean;
+  terms?: Array<
+    Pick<
+      SignedContract,
+      "performer" | "performerSigner" | "performerSignedAt"
+    > & { offer: ContractOffer }
+  >;
 };
 
 export default function BookingReview({ id }: { id: string }) {
@@ -88,7 +101,11 @@ export default function BookingReview({ id }: { id: string }) {
   return (
     <section className="booking-form" aria-labelledby="approval-heading">
       <a href="/">Back to bookings</a>
-      <h2 id="approval-heading">Review, sign and send contracts</h2>
+      <h2 id="approval-heading">
+        {review?.countersign
+          ? "Countersign completed performance"
+          : "Review booking contracts"}
+      </h2>
       {message && <p role="status">{message}</p>}
       {error && (
         <p className="error" role="alert">
@@ -136,6 +153,19 @@ export default function BookingReview({ id }: { id: string }) {
               </li>
             ))}
           </ul>
+          {review.terms?.map((contract) => (
+            <details key={contract.performer.email}>
+              <summary>
+                {contract.performer.name} · Signed{" "}
+                {contract.performerSignedAt.slice(0, 10)}
+              </summary>
+              <ContractTerms offer={contract.offer} />
+              <p>
+                {contract.performer.address} · {contract.performer.email}
+              </p>
+              <p>Signed by {contract.performerSigner}</p>
+            </details>
+          ))}
           <a href={review.template.url} target="_blank" rel="noreferrer">
             Read the DMF standard contract
           </a>
@@ -154,7 +184,11 @@ export default function BookingReview({ id }: { id: string }) {
             terms and sign on behalf of the venue.
           </label>
           <button type="submit" disabled={busy}>
-            {busy ? "Saving signature…" : "Confirm, sign and email artists"}
+            {busy
+              ? "Saving signature…"
+              : review.countersign
+                ? "Countersign and send signed copies"
+                : "Confirm, sign and email artists"}
           </button>
         </form>
       )}

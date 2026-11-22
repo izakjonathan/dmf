@@ -1,13 +1,12 @@
 import { z } from "zod";
 import {
   admin,
-  bookingContractToken,
+  bookingSigningCredentials,
   bookingToken,
   dispatchBookingMail,
   fail,
   equals,
   RequestError,
-  hash,
   json,
   paymentSigningPath,
   readState,
@@ -18,6 +17,9 @@ import {
 } from "@/lib/server";
 import {
   approveBooking,
+  activeBooking,
+  bookingRegistrationClosed,
+  issueBookingContracts,
   contactBookingId,
   reissueBookingContract,
   reopenBooking,
@@ -26,6 +28,7 @@ import {
   isCurrentBookingMail,
   confirmBooking,
   markBookingsPaid,
+  paidSchema,
 } from "@/lib/bookings";
 import { date, today, type Workspace } from "@/lib/model";
 export const maxDuration = 60;
@@ -38,10 +41,6 @@ function response(state: Awaited<ReturnType<typeof readState>>) {
     })),
     sheet: spreadsheet(),
   };
-}
-function signing(id: string) {
-  const raw = bookingContractToken(id);
-  return { hash: hash(raw), url: "https://dmf-eta.vercel.app/register/" + raw };
 }
 function nightAccess(state: Workspace, req: Request) {
   const raw = new URL(req.url).searchParams.get("night");
@@ -128,6 +127,9 @@ export async function GET(req: Request) {
 const actionSchema = z.object({
   action: z.enum([
     "sync",
+    "createBooking",
+    "ticketSales",
+    "issueContracts",
     "approve",
     "attendance",
     "attendanceDate",
@@ -168,7 +170,54 @@ export async function POST(req: Request) {
           .parse(input.data),
         by: access.name,
       });
-      return json(nightResponse(await writeState(state), access));
+      const saved = await writeState(
+        state,
+        booking.artistFirst ? { sheetBookingId: booking.id } : undefined,
+      );
+      return json(nightResponse(saved, access));
+    }
+    if (input.action === "createBooking") {
+      const data = z
+        .object({
+          requestId: z.string().uuid(),
+          date,
+          act: z.string().trim().min(1).max(300).regex(/^[^=]/),
+          contactName: z.string().trim().min(1).max(300).regex(/^[^=]/),
+          contactEmail: z
+            .string()
+            .trim()
+            .email()
+            .max(254)
+            .toLowerCase()
+            .regex(/^[^=]/),
+          contactPhone: z
+            .string()
+            .trim()
+            .max(50)
+            .regex(/^[+0-9 ()-]*$/)
+            .optional(),
+          booker: z.string().trim().min(1).max(300).regex(/^[^=]/),
+          fee: z.number().int().positive().max(100000000),
+          ticketPrice: z.number().int().min(0).max(100000000),
+        })
+        .parse(input.data);
+      const result = await sheets("createBooking", { booking: data });
+      return json({
+        ...response(result.state),
+        bookingDate: data.date,
+        message: "Booking saved. The invitation is queued.",
+      });
+    }
+    if (input.action === "ticketSales") {
+      const { sold } = z
+        .object({ sold: z.number().int().min(0).max(1000000) })
+        .parse(input.data);
+      if (!input.id) throw new RequestError("Choose a booking.");
+      const result = await sheets("ticketSales", { id: input.id, sold });
+      return json({
+        ...response(result.state),
+        message: "Ticket sales saved.",
+      });
     }
     if (input.action === "sync") {
       const result = await sheets("syncBookings");
@@ -220,7 +269,7 @@ export async function POST(req: Request) {
           b.id === input.id &&
           !b.cancelled &&
           !b.sourceError &&
-          b.approvedVersion === b.version,
+          bookingRegistrationClosed(b),
       );
       const member = booking?.members.find((m) => m.id === memberId);
       const invite =
@@ -236,9 +285,36 @@ export async function POST(req: Request) {
         throw Error("Reissue the contract to create an active signing link.");
       return json({ link: paymentSigningPath(invite) });
     }
+    if (input.action === "issueContracts") {
+      const booking = activeBooking(state, input.id || "");
+      if (!booking.artistFirst)
+        throw new RequestError(
+          "This booking uses the existing venue-first approval.",
+        );
+      const checked = await sheets("sheetBookingReview", { id: booking.id });
+      const current = activeBooking(checked.state, booking.id);
+      issueBookingContracts(
+        checked.state,
+        current,
+        current,
+        bookingSigningCredentials,
+      );
+      const saved = await writeState(checked.state, {
+        sheetBookingId: booking.id,
+      });
+      try {
+        const result = await dispatchBookingMail();
+        return json({ ...response(result.state), delivery: result.delivery });
+      } catch {
+        return json({
+          ...response(saved),
+          warning: "Contracts queued. Check email status for delivery.",
+        });
+      }
+    }
     if (input.action === "approve") {
       if (!input.id) throw Error("Choose a booking.");
-      approveBooking(state, input.id, input.data, signing);
+      approveBooking(state, input.id, input.data, bookingSigningCredentials);
     }
     if (input.action === "correctBooking") {
       if (!input.id) throw new RequestError("Choose a booking.");
@@ -254,9 +330,10 @@ export async function POST(req: Request) {
         input.id,
         value.memberId,
         value.returnBy,
-        signing,
+        bookingSigningCredentials,
       );
     }
+    const rowChecks = new Set<string>();
     if (input.action === "attendanceDate") {
       const value = z
         .object({
@@ -273,23 +350,33 @@ export async function POST(req: Request) {
         throw new RequestError(
           "Record any incomplete lineup in the act’s performance checklist.",
         );
-      for (const booking of acts)
+      for (const booking of acts) {
+        if (booking.artistFirst) rowChecks.add(booking.id);
         confirmBooking(state, booking.id, {
           by: value.by,
           note: "",
           members: booking.members.map((m) => ({ id: m.id, status: "played" })),
         });
+      }
     }
     if (input.action === "attendance") {
       if (!input.id) throw Error("Choose a booking.");
+      const booking = activeBooking(state, input.id);
+      if (booking.artistFirst) rowChecks.add(booking.id);
       confirmBooking(state, input.id, input.data);
     }
-    if (input.action === "paid") markBookingsPaid(state, input.data);
+    if (input.action === "paid") {
+      const data = paidSchema.parse(input.data);
+      for (const { bookingId } of data.members)
+        if (activeBooking(state, bookingId).artistFirst)
+          rowChecks.add(bookingId);
+      markBookingsPaid(state, data);
+    }
     if (input.action === "resendInvitation") {
       const booking = state.bookings?.find(
         (b) => b.id === input.id && !b.cancelled && !b.sourceError,
       );
-      if (!booking || booking.approvedVersion === booking.version)
+      if (!booking || bookingRegistrationClosed(booking))
         throw new RequestError(
           "Choose an open booking with a current contact.",
           409,
@@ -353,7 +440,10 @@ export async function POST(req: Request) {
       mail.status = "pending";
       mail.error = undefined;
     }
-    const saved = await writeState(state);
+    const saved = await writeState(
+      state,
+      rowChecks.size ? { sheetBookingIds: [...rowChecks] } : undefined,
+    );
     if (["approve", "retry", "reissue"].includes(input.action)) {
       try {
         const result = await dispatchBookingMail();

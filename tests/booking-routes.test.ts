@@ -49,6 +49,14 @@ test("booking API completes registration, signatures, attendance and payment wit
     },
     bookingToken: (id: string) => (id === bookingId ? bookingToken : hash(id)),
     bookingContractToken: (id: string) => hash("sign:" + id),
+    bookingSigningCredentials: (id: string) => ({
+      hash: hash(hash("sign:" + id)),
+      url: "https://dmf-eta.vercel.app/register/" + hash("sign:" + id),
+    }),
+    bookingReceiptUrl: (id: string) =>
+      "https://dmf-eta.vercel.app/register/" +
+      hash("receipt:" + id) +
+      "?receipt=1",
     token: () => hash(crypto.randomUUID()),
     hash,
     equals: (a: string, b: string) => a === b,
@@ -523,4 +531,148 @@ test("booking API completes registration, signatures, attendance and payment wit
     ).status,
     400,
   );
+
+  // Run the newer artist-first flow through the same public and sheet endpoints.
+  state = structuredClone(beforeDirectRegistration);
+  const booking = state.bookings![0];
+  booking.artistFirst = true;
+  booking.expectedMembers = 1;
+  const contactContext = {
+    params: Promise.resolve({
+      token: hash(bookingModel.contactBookingId(booking)),
+    }),
+  };
+  const started = await artist.POST(
+    post({
+      action: "act",
+      performance: {
+        start: "20:00",
+        end: "22:00",
+        sets: 2,
+        minutesPerSet: 40,
+        soundcheck: "No",
+      },
+      expectedMembers: 1,
+      fee: booking.fee,
+      promotion: {
+        bio: "A synthetic trio",
+        photoUrl: "https://example.com/photo.jpg",
+      },
+    }),
+    contactContext,
+  );
+  assert.equal(started.status, 200);
+  assert.equal(state.invites.length, 0);
+  assert.equal(
+    (
+      await artist.POST(
+        post({
+          action: "register",
+          profile: { ...contact, preferredPaymentType: "Bank transfer" },
+        }),
+        context,
+      )
+    ).status,
+    200,
+  );
+  const [invite] = state.invites;
+  assert.ok(invite);
+  assert.equal(invite.offer!.organizerSignedAt, undefined);
+  assert.equal(
+    state.bookingMail!.some(
+      (mail) => mail.id === "contract:" + invite.id && mail.status === "sent",
+    ),
+    true,
+  );
+  assert.equal((await sheetApproval.POST(sheetPost("review"))).status, 409);
+  const token = hash("sign:" + invite.id);
+  const signingContext = { params: Promise.resolve({ token }) };
+  const performerSignature = {
+    name: invite.performer!.name,
+    accepted: "on",
+    version: model.dmfTemplate.version,
+  };
+  assert.equal(
+    (
+      await signing.POST(
+        post({ email: contact.email, signature: performerSignature }),
+        signingContext,
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    state.bookingMail!.some((mail) => mail.kind === "receipt"),
+    false,
+  );
+  const receiptToken = hash("receipt:" + invite.id);
+  const getReceipt = () =>
+    signing.GET(
+      new Request(
+        "https://example.com/register/" + receiptToken + "?receipt=1",
+      ),
+      {
+        params: Promise.resolve({ token: receiptToken }),
+      },
+    );
+  assert.equal((await getReceipt()).status, 404);
+  assert.equal(
+    (await sheetApproval.POST(sheetPost("paymentsReview"))).status,
+    409,
+  );
+  const attendance = await (
+    await sheetApproval.POST(sheetPost("attendanceReview"))
+  ).json();
+  const confirmation = await sheetApproval.POST(
+    sheetPost("attendance", {
+      review: attendance.review,
+      signer: "Night Employee",
+      accepted: true,
+    }),
+  );
+  assert.equal(confirmation.status, 200);
+  assert.equal(
+    (await sheetApproval.POST(sheetPost("paymentsReview"))).status,
+    409,
+  );
+  const review = await (await sheetApproval.POST(sheetPost("review"))).json();
+  assert.equal(review.countersign, true);
+  assert.equal(
+    (
+      await sheetApproval.POST(
+        sheetPost("sign", {
+          review: review.review,
+          signer: "Venue Owner",
+          accepted: true,
+        }),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(state.contracts![0].offer.organizerSigner, "Venue Owner");
+  assert.ok(state.contracts![0].offer.organizerSignedAt);
+  assert.equal((await getReceipt()).status, 200);
+  assert.equal(
+    state.bookingMail!.filter(
+      (mail) => mail.kind === "receipt" && mail.status === "sent",
+    ).length,
+    1,
+  );
+  const queue = await (
+    await sheetApproval.POST(sheetPost("paymentsReview"))
+  ).json();
+  assert.equal(queue.ready.length, 1);
+  const record = () =>
+    sheetApproval.POST(
+      sheetPost("recordPayment", {
+        review: queue.review,
+        signer: "Venue Owner",
+        accepted: true,
+        paidOn: model.today(),
+        selection: "1",
+      }),
+    );
+  assert.equal((await record()).status, 200);
+  assert.equal((await record()).status, 409);
+  assert.equal(state.payments.length, historyCount + 1);
 });

@@ -186,7 +186,9 @@ export default function Registration({ token }: { token: string }) {
           </header>
           <h1>
             {saved && contract
-              ? "Signed contract"
+              ? contract.offer.organizerSignedAt
+                ? "Signed contract"
+                : "Signature recorded"
               : details?.signingOnly
                 ? "Sign contract"
                 : "Musician details"}

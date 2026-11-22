@@ -1,12 +1,28 @@
 import { createHmac } from "node:crypto";
 import { z } from "zod";
-import { activeBooking, approveBooking, signingDeadline } from "@/lib/bookings";
-import { dmfTemplate, venueSchema, type Workspace } from "@/lib/model";
+import {
+  activeBooking,
+  approveBooking,
+  confirmBooking,
+  markBookingsPaid,
+  pendingReason,
+  contractsForCountersign,
+  countersignBooking,
+  signingDeadline,
+} from "@/lib/bookings";
+import {
+  date,
+  dmfTemplate,
+  today,
+  venueSchema,
+  type Workspace,
+} from "@/lib/model";
 import {
   admin,
   sameOrigin,
   readState,
-  bookingContractToken,
+  bookingSigningCredentials,
+  bookingReceiptUrl,
   dispatchBookingMail,
   equals,
   fail,
@@ -18,7 +34,27 @@ import {
 } from "@/lib/server";
 
 export const maxDuration = 60;
+const attendanceOperation = z.object({
+  id: z.string().uuid(),
+  timestamp: z.number().int(),
+});
 const requestSchema = z.discriminatedUnion("action", [
+  attendanceOperation.extend({ action: z.literal("attendanceReview") }),
+  attendanceOperation.extend({ action: z.literal("paymentsReview") }),
+  attendanceOperation.extend({
+    action: z.literal("recordPayment"),
+    signer: z.string().trim().min(2).max(300),
+    review: z.string().regex(/^[a-f0-9]{64}$/),
+    accepted: z.literal(true),
+    paidOn: date,
+    selection: z.string().regex(/^(all|[1-9]\d{0,2})$/),
+  }),
+  attendanceOperation.extend({
+    action: z.literal("attendance"),
+    signer: z.string().trim().min(2).max(300),
+    review: z.string().regex(/^[a-f0-9]{64}$/),
+    accepted: z.literal(true),
+  }),
   z.object({
     action: z.literal("review"),
     id: z.string().uuid(),
@@ -39,6 +75,14 @@ function reviewBooking(state: Workspace, id: string) {
   if (booking.sourceError) throw new RequestError(booking.sourceError, 409);
   if (booking.approvedVersion === booking.version)
     return { booking, data: null, review: "" };
+  let contracts;
+  if (booking.artistFirst) {
+    try {
+      contracts = contractsForCountersign(state, booking);
+    } catch (error) {
+      throw new RequestError((error as Error).message, 409);
+    }
+  }
   if (
     !booking.performance ||
     booking.members.length !== booking.expectedMembers
@@ -69,7 +113,14 @@ function reviewBooking(state: Workspace, id: string) {
       email: member.email,
       method: member.paymentType || booking.paymentType,
     })),
-    template: dmfTemplate,
+    template: contracts?.[0]?.offer.template ?? dmfTemplate,
+    countersign: Boolean(booking.artistFirst),
+    terms: contracts?.map((contract) => ({
+      offer: contract.offer,
+      performer: contract.performer,
+      performerSigner: contract.performerSigner,
+      performerSignedAt: contract.performerSignedAt,
+    })),
   };
   return { booking, data, review: hash(JSON.stringify(data)) };
 }
@@ -134,6 +185,107 @@ export async function POST(req: Request) {
         legacy = true;
       }
     }
+    if (input.action === "paymentsReview" || input.action === "recordPayment") {
+      if (!fromScript)
+        throw new RequestError(
+          "Open the payment action from the booking sheet.",
+          403,
+        );
+      const booking = activeBooking(state, input.id);
+      const ready = booking.members
+        .filter(
+          (member) => pendingReason(state, booking, member) === "Ready to pay",
+        )
+        .map((member) => ({
+          id: member.id,
+          name: member.name,
+          contractId: member.contractId,
+          fee: state.contracts!.find(
+            (contract) => contract.id === member.contractId,
+          )!.offer.fee,
+          method: member.paymentType || booking.paymentType,
+        }));
+      if (!ready.length)
+        throw new RequestError(
+          "No payments are ready to record for this booking.",
+          409,
+        );
+      const review = hash(JSON.stringify([booking.id, booking.version, ready]));
+      if (input.action === "paymentsReview")
+        return json({
+          act: booking.act,
+          date: booking.date,
+          ready,
+          review,
+          today: today(),
+        });
+      if (!equals(review, input.review))
+        throw new RequestError(
+          "The payment queue changed. Review it again.",
+          409,
+        );
+      const selected =
+        input.selection === "all"
+          ? ready
+          : [ready[Number(input.selection) - 1]];
+      if (selected.some((member) => !member))
+        throw new RequestError(
+          "Choose a number shown in the review or enter all.",
+        );
+      markBookingsPaid(state, {
+        by: input.signer,
+        paidOn: input.paidOn,
+        members: selected.map((member) => ({
+          bookingId: booking.id,
+          memberId: member.id,
+        })),
+      });
+      await writeState(state, { sheetBookingId: booking.id });
+      return json({
+        message: "Recorded " + selected.length + " processed payment(s).",
+      });
+    }
+    if (input.action === "attendanceReview" || input.action === "attendance") {
+      if (!fromScript)
+        throw new RequestError(
+          "Open the attendance action from the booking sheet.",
+          403,
+        );
+      const booking = activeBooking(state, input.id);
+      if (
+        booking.confirmedAt ||
+        booking.date > today() ||
+        !booking.performance ||
+        booking.members.length !== booking.expectedMembers
+      )
+        throw new RequestError(
+          "Choose a completed show with a full, unconfirmed lineup. For exceptions, open the booking in Stagebook.",
+          409,
+        );
+      const roster = booking.members.map(({ id, name }) => ({ id, name }));
+      const review = hash(
+        JSON.stringify([booking.id, booking.version, booking.date, roster]),
+      );
+      if (input.action === "attendanceReview")
+        return json({
+          act: booking.act,
+          date: booking.date,
+          members: roster.map((member) => member.name),
+          review,
+        });
+      if (!equals(review, input.review))
+        throw new RequestError(
+          "The lineup changed. Review the booking again.",
+          409,
+        );
+      confirmBooking(state, booking.id, {
+        by: input.signer,
+        note: "",
+        members: roster.map(({ id }) => ({ id, status: "played" })),
+      });
+      await writeState(state, { sheetBookingId: booking.id });
+      return json({ message: "Performance confirmed." });
+    }
     const { booking, data, review } = reviewBooking(state, input.id);
     if (!data) {
       if (input.action === "sign")
@@ -152,31 +304,24 @@ export async function POST(req: Request) {
         "The booking changed while you were reviewing it. Open the review again.",
         409,
       );
-    approveBooking(
-      state,
-      booking.id,
-      { ...data, accepted: input.accepted, signer: input.signer },
-      (id) => {
-        const token = bookingContractToken(id);
-        return {
-          hash: hash(token),
-          url: "https://dmf-eta.vercel.app/register/" + token,
-        };
-      },
-    );
-    const signed = await writeState(
+    if (booking.artistFirst)
+      countersignBooking(state, booking, input.signer, bookingReceiptUrl);
+    else
+      approveBooking(
+        state,
+        booking.id,
+        { ...data, accepted: input.accepted, signer: input.signer },
+        bookingSigningCredentials,
+      );
+    await writeState(
       state,
       legacy ? undefined : { sheetBookingId: booking.id },
     );
     const ids = new Set(
-      signed.invites
-        .filter(
-          (invite) =>
-            invite.bookingId === booking.id &&
-            invite.bookingVersion === booking.version &&
-            !invite.revoked,
-        )
-        .map((invite) => "contract:" + invite.id),
+      booking.members.map(
+        (member) =>
+          (booking.artistFirst ? "receipt:" : "contract:") + member.contractId,
+      ),
     );
     try {
       const result = await dispatchBookingMail();
@@ -185,7 +330,7 @@ export async function POST(req: Request) {
           ids.has(mail.id) && mail.status === "sent",
       ).length;
       return json({
-        message: `Company signature saved. ${sent} of ${ids.size} requests sent by Google. Check Stagebook for individual email and signature status.`,
+        message: `Company signature saved. ${sent} of ${ids.size} ${booking.artistFirst ? "signed copies" : "requests"} sent by Google. Check Stagebook for individual email and signature status.`,
       });
     } catch {
       return json({

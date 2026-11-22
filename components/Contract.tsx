@@ -155,6 +155,17 @@ export function ContractTerms({
         <dd>
           {organizer.name} · {organizer.address}
         </dd>
+        {offer.bookingAct && (
+          <>
+            <dt>Act</dt>
+            <dd>
+              {offer.bookingAct}
+              {offer.bookedMusicians
+                ? ` · ${offer.bookedMusicians} musicians`
+                : ""}
+            </dd>
+          </>
+        )}
         <dt>Performance</dt>
         <dd>
           {offer.performanceDate}
@@ -221,9 +232,15 @@ export function ContractTerms({
         )}
         <dt>Organizer signed</dt>
         <dd>
-          {offer.organizerSigner}
-          <br />
-          {signedDate(offer.organizerSignedAt)} (Copenhagen time)
+          {offer.organizerSignedAt ? (
+            <>
+              {offer.organizerSigner}
+              <br />
+              {signedDate(offer.organizerSignedAt)} (Copenhagen time)
+            </>
+          ) : (
+            "Awaiting venue signature after the show"
+          )}
         </dd>
       </dl>
     </>
@@ -240,7 +257,9 @@ export function ContractReceipt({
   return (
     <article className="contract-receipt">
       <h2 id={inDialog ? "workspace-dialog-title" : undefined}>
-        Signed DMF contract
+        {contract.offer.organizerSignedAt
+          ? "Signed DMF contract"
+          : "Musician signature recorded"}
       </h2>
       <p className="fine">Contract ID {contract.id}</p>
       <ContractTerms

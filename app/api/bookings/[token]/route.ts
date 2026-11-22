@@ -2,10 +2,12 @@ import { z } from "zod";
 import {
   artistPerformanceSchema,
   musicianSchema,
+  venueSchema,
   type Workspace,
 } from "@/lib/model";
 import {
   bookingToken,
+  bookingSigningCredentials,
   dispatchBookingMail,
   equals,
   fail,
@@ -17,7 +19,12 @@ import {
   token,
   writeState,
 } from "@/lib/server";
-import { contactBookingId, type Booking } from "@/lib/bookings";
+import {
+  bookingRegistrationClosed,
+  contactBookingId,
+  issueBookingContracts,
+  type Booking,
+} from "@/lib/bookings";
 export const maxDuration = 60;
 type Context = { params: Promise<{ token: string }> };
 function findBooking(state: Workspace, raw: string) {
@@ -56,7 +63,9 @@ function publicDetails(state: Workspace, booking: Booking) {
       expectedMembers: booking.expectedMembers,
       registered: booking.members.length,
       performance: booking.performance,
-      approved: booking.approvedVersion === booking.version,
+      approved: bookingRegistrationClosed(booking),
+      artistFirst: booking.artistFirst,
+      venueFee: Boolean(booking.artistFirst && booking.fee),
       fee: booking.fee,
       paymentType: booking.paymentType,
       dueOn: booking.dueOn,
@@ -78,7 +87,12 @@ export async function GET(req: Request, context: Context) {
     const sharedPath = "/b/" + bookingToken(booking.id);
     const proofToken = new URL(req.url).searchParams.get("verify");
     if (!proofToken)
-      return json({ ...publicDetails(state, booking), isContact, sharedPath });
+      return json({
+        ...publicDetails(state, booking),
+        isContact,
+        sharedPath,
+        promotion: isContact ? booking.promotion : undefined,
+      });
     const proof = verify(state, booking, proofToken);
     const profile =
       state.musicians.find(
@@ -119,7 +133,7 @@ export async function POST(req: Request, context: Context) {
     const booking = findBooking(state, raw);
     const body = await req.json();
     if (body.action === "verify") {
-      if (booking.approvedVersion === booking.version)
+      if (bookingRegistrationClosed(booking))
         throw new RequestError(
           "This booking is approved. Contact the venue for a correction.",
           409,
@@ -202,7 +216,7 @@ export async function POST(req: Request, context: Context) {
     const proof = body.verification
       ? verify(state, booking, String(body.verification))
       : null;
-    if (booking.approvedVersion === booking.version)
+    if (bookingRegistrationClosed(booking))
       throw new RequestError(
         "The lineup and agreement are approved. Contact the venue to request a change.",
         409,
@@ -240,6 +254,23 @@ export async function POST(req: Request, context: Context) {
         performance,
         expectedMembers: expected,
         fee: source?.fee > 0 ? source.fee : proposedFee,
+        promotion: z
+          .object({
+            bio: z.string().trim().max(4000).default(""),
+            photoUrl: z
+              .string()
+              .trim()
+              .max(1000)
+              .regex(/^(https?:\/\/[^\s]+)?$/)
+              .default(""),
+            website: z
+              .string()
+              .trim()
+              .max(1000)
+              .regex(/^(https?:\/\/[^\s]+)?$/)
+              .default(""),
+          })
+          .parse(body.promotion ?? {}),
       });
     } else if (body.action === "register") {
       const input = musicianSchema.parse(body.profile);
@@ -319,6 +350,14 @@ export async function POST(req: Request, context: Context) {
       booking.performance && booking.members.length === booking.expectedMembers;
     if (
       complete &&
+      booking.artistFirst &&
+      booking.fee &&
+      venueSchema.safeParse(state.venue).success
+    ) {
+      issueBookingContracts(state, booking, booking, bookingSigningCredentials);
+    } else if (
+      complete &&
+      !booking.artistFirst &&
       !state.bookingMail?.some(
         (m) =>
           m.id ===
@@ -339,7 +378,10 @@ export async function POST(req: Request, context: Context) {
         body: "The musicians have completed the booking details. Review the lineup, schedule and fees, then approve and sign in Stagebook.\n\nhttps://dmf-eta.vercel.app",
       });
     }
-    await writeState(state);
+    await writeState(
+      state,
+      booking.artistFirst ? { sheetBookingId: booking.id } : undefined,
+    );
     try {
       await dispatchBookingMail();
     } catch {

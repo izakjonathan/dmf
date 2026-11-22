@@ -34,6 +34,11 @@ export type Booking = {
   date: string;
   act: string;
   contactEmail: string;
+  contactName?: string;
+  contactPhone?: string;
+  artistFirst?: boolean;
+  contractsVersion?: number;
+  promotion?: { bio: string; photoUrl: string; website: string };
   expectedMembers: number;
   fee: number;
   paymentType: "Cash" | "Bank transfer" | "Mobilepay";
@@ -55,6 +60,7 @@ export type Booking = {
   sourceVersion?: number;
   sourceSignature?: string;
   operations?: {
+    ticketsSold?: number;
     ticketPrice?: unknown;
     entranceIncome?: unknown;
     guestCount?: unknown;
@@ -122,7 +128,9 @@ export function pendingReason(
   if (booking.sourceError) return "Booking sheet needs attention";
   if (booking.confirmedAt && member.attendance === "absent")
     return "Artist absent";
-  if (booking.approvedVersion !== booking.version)
+  if (booking.artistFirst && booking.contractsVersion !== booking.version)
+    return "Registration or contract details needed";
+  if (!booking.artistFirst && booking.approvedVersion !== booking.version)
     return "Company approval needed";
   const contract = state.contracts?.find(
     (item) =>
@@ -132,6 +140,7 @@ export function pendingReason(
   if (!booking.confirmedAt) return "Performance confirmation needed";
   if (!member.attendance) return "Attendance not recorded";
   if (member.attendance !== "played") return "Performance issue";
+  if (!contract.offer.organizerSignedAt) return "Venue signature needed";
   if (
     hasOtherPaymentPath(
       state,
@@ -160,15 +169,42 @@ export function approveBooking(
   signing: (id: string) => { hash: string; url: string },
 ) {
   const booking = activeBooking(state, id);
+  if (booking.artistFirst)
+    throw new Error(
+      "Musicians sign first. Use the venue countersign review after the show.",
+    );
+  const value = approvalSchema.parse(input);
+  return issueBookingContracts(state, booking, value, signing, value.signer);
+}
+
+export function issueBookingContracts(
+  state: Workspace,
+  booking: Booking,
+  input: { fee: number; dueOn: string; returnBy?: string },
+  signing: (id: string) => { hash: string; url: string },
+  organizerSigner = "",
+) {
+  const { id } = booking;
   if (booking.members.some((m) => m.paymentId))
     throw Error("A paid booking cannot be approved again.");
   if (booking.approvedVersion === booking.version)
     throw Error("This version is already approved.");
+  if (booking.contractsVersion === booking.version)
+    throw Error("Contracts were already issued for this version.");
   if (booking.sourceError) throw Error(booking.sourceError);
-  if (booking.members.length !== booking.expectedMembers)
+  if (
+    !booking.expectedMembers ||
+    booking.members.length !== booking.expectedMembers
+  )
     throw Error("Every expected musician must register before approval.");
   const performance = artistPerformanceSchema.parse(booking.performance);
-  const inputValues = approvalSchema.parse(input);
+  const inputValues = z
+    .object({
+      fee: approvalSchema.shape.fee,
+      dueOn: date,
+      returnBy: date.optional(),
+    })
+    .parse(input);
   const returnBy = inputValues.returnBy || signingDeadline(booking.date);
   if (returnBy < today())
     throw Error("Choose a signing deadline of today or later.");
@@ -214,13 +250,15 @@ export function approveBooking(
           phone: organizer.phone,
         },
         performanceDate: booking.date,
+        bookingAct: booking.act,
+        bookedMusicians: booking.expectedMembers,
         fee: inputValues.fee,
         paymentType: member.paymentType || booking.paymentType,
         payOn: inputValues.dueOn,
         performerEmail: member.email,
         returnBy,
-        organizerSigner: inputValues.signer,
-        organizerSignedAt: at,
+        organizerSigner,
+        organizerSignedAt: organizerSigner ? at : undefined,
         template: dmfTemplate,
       },
     };
@@ -261,9 +299,12 @@ export function approveBooking(
   Object.assign(booking, {
     fee: inputValues.fee,
     dueOn: inputValues.dueOn,
-    approvedVersion: booking.version,
-    approvedBy: inputValues.signer,
-    approvedAt: at,
+    contractsVersion: booking.version,
+    ...(organizerSigner && {
+      approvedVersion: booking.version,
+      approvedBy: organizerSigner,
+      approvedAt: at,
+    }),
   });
   return booking;
 }
@@ -275,7 +316,7 @@ export function reissueBookingContract(
   signing: (id: string) => { hash: string; url: string },
 ) {
   const booking = activeBooking(state, bookingId);
-  if (booking.sourceError || booking.approvedVersion !== booking.version)
+  if (booking.sourceError || !bookingRegistrationClosed(booking))
     throw Error("Approve the current booking before reissuing a contract.");
   const member = booking.members.find((m) => m.id === memberId);
   const previous = state.invites.find(
@@ -343,6 +384,7 @@ export function reopenBooking(state: Workspace, id: string, input: unknown) {
       (member) => member.id !== memberId,
     );
   booking.version++;
+  booking.contractsVersion = undefined;
   booking.approvedVersion = undefined;
   booking.approvedAt = undefined;
   booking.approvedBy = undefined;
@@ -475,7 +517,39 @@ export function isCurrentBookingMail(mail: BookingMail, booking: Booking) {
 export function bookingContractStatus(state: Workspace, booking: Booking) {
   if (booking.cancelled) return "Cancelled";
   if (booking.sourceError) return "Booking sheet needs attention";
-  if (booking.approvedVersion !== booking.version && booking.performance && booking.members.length === booking.expectedMembers && !booking.fee) return "Fee needed";
+  if (booking.artistFirst) {
+    if (booking.approvedVersion === booking.version)
+      return "All contracts signed";
+    if (booking.contractsVersion !== booking.version) {
+      if (
+        !booking.performance ||
+        booking.members.length !== booking.expectedMembers
+      )
+        return "Waiting for registrations";
+      return booking.fee ? "Contracts need issuing" : "Fee needed";
+    }
+    const signed = booking.members.filter((member) =>
+      state.contracts?.some(
+        (contract) =>
+          contract.id === member.contractId &&
+          contract.bookingVersion === booking.version,
+      ),
+    ).length;
+    if (signed < booking.expectedMembers)
+      return `${signed}/${booking.expectedMembers} musicians signed`;
+    return !booking.confirmedAt
+      ? "Waiting for performance confirmation"
+      : booking.members.some((member) => member.attendance !== "played")
+        ? "Performance exception needs review"
+        : "Ready for venue signature";
+  }
+  if (
+    booking.approvedVersion !== booking.version &&
+    booking.performance &&
+    booking.members.length === booking.expectedMembers &&
+    !booking.fee
+  )
+    return "Fee needed";
   if (booking.approvedVersion !== booking.version)
     return booking.performance &&
       booking.members.length === booking.expectedMembers
@@ -516,7 +590,9 @@ export function bookingOverview(state: Workspace) {
         const signatureStatus = contract
           ? "Signed"
           : !invite
-            ? "Awaiting company signature"
+            ? booking.artistFirst
+              ? "Awaiting contract"
+              : "Awaiting company signature"
             : invite.revoked
               ? "Revoked"
               : invite.offer && invite.offer.returnBy < today()
@@ -558,4 +634,83 @@ export function bookingOverview(state: Workspace) {
         sentAt: mail.sentAt,
       })),
   }));
+}
+
+export function bookingRegistrationClosed(booking: Booking) {
+  return (
+    booking.approvedVersion === booking.version ||
+    booking.contractsVersion === booking.version
+  );
+}
+
+export function bookingReceipt(
+  state: Workspace,
+  bookingId: string,
+  contract: NonNullable<Workspace["contracts"]>[number],
+  url: string,
+) {
+  const mail = (state.bookingMail ??= []);
+  const id = "receipt:" + contract.id;
+  if (mail.some((item) => item.id === id)) return;
+  mail.push({
+    id,
+    bookingId,
+    memberId: contract.memberId,
+    to: contract.offer.performerEmail,
+    kind: "receipt",
+    status: "pending",
+    subject: "Signed contract receipt · " + contract.offer.performanceDate,
+    body:
+      "Your agreement signed by you and the venue is available at the private link below. Keep it for your records. The link is valid for one year.\n\n" +
+      url,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+export function contractsForCountersign(state: Workspace, booking: Booking) {
+  if (booking.sourceError) throw Error(booking.sourceError);
+  if (!booking.confirmedAt || booking.date > today())
+    throw Error("Confirm the performance before signing for the venue.");
+  if (booking.contractsVersion !== booking.version)
+    throw Error("Issue the current contracts first.");
+  if (booking.members.some((member) => member.attendance !== "played"))
+    throw Error(
+      "Resolve the performance exceptions before signing this booking.",
+    );
+  const contracts = booking.members.map((member) =>
+    state.contracts?.find(
+      (contract) =>
+        contract.id === member.contractId &&
+        contract.bookingVersion === booking.version,
+    ),
+  );
+  if (
+    contracts.length !== booking.expectedMembers ||
+    !contracts.length ||
+    contracts.some((contract) => !contract)
+  )
+    throw Error("Every musician must sign before the venue can countersign.");
+  return contracts.filter((contract) => contract !== undefined);
+}
+
+export function countersignBooking(
+  state: Workspace,
+  booking: Booking,
+  signer: string,
+  url: (id: string) => string,
+) {
+  const contracts = contractsForCountersign(state, booking);
+  if (booking.approvedVersion === booking.version) return;
+  const at = new Date().toISOString();
+  for (const contract of contracts) {
+    contract.offer = {
+      ...contract.offer,
+      organizerSigner: signer,
+      organizerSignedAt: at,
+    };
+    bookingReceipt(state, booking.id, contract, url(contract.id));
+  }
+  booking.approvedVersion = booking.version;
+  booking.approvedBy = signer;
+  booking.approvedAt = at;
 }

@@ -1,6 +1,7 @@
 import {
   fail,
   bookingToken,
+  bookingReceiptUrl,
   equals,
   findInvite,
   json,
@@ -17,6 +18,7 @@ import {
   type Invite,
   type SignedContract,
 } from "@/lib/model";
+import { bookingReceipt, bookingRegistrationClosed } from "@/lib/bookings";
 type Context = { params: Promise<{ token: string }> };
 export const maxDuration = 60;
 function registrationOffer(invite: Invite) {
@@ -45,7 +47,9 @@ export async function GET(_req: Request, context: Context) {
         state.contracts?.find(
           (item) =>
             item.bookingId &&
-            Date.parse(item.performerSignedAt) + 365 * 86400000 > Date.now() &&
+            item.offer.organizerSignedAt &&
+            Date.parse(item.offer.organizerSignedAt) + 365 * 86400000 >
+              Date.now() &&
             equals(bookingToken("receipt:" + item.id), token),
         );
       if (!contract)
@@ -63,7 +67,7 @@ export async function GET(_req: Request, context: Context) {
         booking.cancelled ||
         booking.sourceError ||
         booking.version !== invite.bookingVersion ||
-        booking.approvedVersion !== booking.version
+        !bookingRegistrationClosed(booking)
       )
         throw new RequestError(
           "This agreement was replaced or cancelled. Contact the venue for the current version.",
@@ -115,7 +119,7 @@ export async function POST(req: Request, context: Context) {
         booking.cancelled ||
         booking.sourceError ||
         booking.version !== invite.bookingVersion ||
-        booking.approvedVersion !== booking.version
+        !bookingRegistrationClosed(booking)
       )
         throw new RequestError(
           "This agreement was replaced or cancelled. Contact the venue for the current version.",
@@ -160,25 +164,20 @@ export async function POST(req: Request, context: Context) {
       state.contracts.push(contract);
       if (performance) invite.offer = contract.offer;
       invite.signedAt = contract.performerSignedAt;
-      if (invite.bookingId) {
-        state.bookingMail ??= [];
-        state.bookingMail.push({
-          id: "receipt:" + contract.id,
-          bookingId: invite.bookingId,
-          memberId: invite.memberId,
-          to: contract.offer.performerEmail,
-          kind: "receipt",
-          status: "pending",
-          subject:
-            "Signed contract receipt · " + contract.offer.performanceDate,
-          body:
-            "Your signed agreement is available at the private link below. Keep it for your records. The link is valid for one year.\n\nhttps://dmf-eta.vercel.app/register/" +
-            bookingToken("receipt:" + contract.id) +
-            "?receipt=1",
-          createdAt: contract.performerSignedAt,
-        });
-      }
-      await writeState(state);
+      if (invite.bookingId && contract.offer.organizerSignedAt)
+        bookingReceipt(
+          state,
+          invite.bookingId,
+          contract,
+          bookingReceiptUrl(contract.id),
+        );
+      const booking = state.bookings?.find(
+        (item) => item.id === invite.bookingId,
+      );
+      await writeState(
+        state,
+        booking?.artistFirst ? { sheetBookingId: booking.id } : undefined,
+      );
       return json({ ok: true, contract });
     }
     const input = musicianSchema.parse(body);

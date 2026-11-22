@@ -157,6 +157,8 @@ export type ContractOffer = Omit<
   requests?: string;
   paymentType?: "Cash" | "Bank transfer" | "Mobilepay";
   performerEmail: string;
+  bookingAct?: string;
+  bookedMusicians?: number;
   performanceDate: string;
   fee: number;
   payOn: string;
@@ -164,7 +166,7 @@ export type ContractOffer = Omit<
     Venue,
     "name" | "legalName" | "address" | "cvr" | "email" | "phone"
   >;
-  organizerSignedAt: string;
+  organizerSignedAt?: string;
   template: typeof dmfTemplate;
 };
 
@@ -516,6 +518,7 @@ export function clientWorkspace(state: Workspace) {
       id: contract.id,
       performer: contract.performer.name,
       date: contract.offer.performanceDate,
+      finalized: Boolean(contract.offer.organizerSignedAt),
     })),
     musicians: publicMusicians.filter((musician) => !musician.deletedAt),
     deletedMusicians: publicMusicians.filter(

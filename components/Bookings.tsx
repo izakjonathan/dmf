@@ -45,9 +45,13 @@ async function request(body?: object, query = "") {
 }
 export default function Bookings({
   payments = false,
+  contracts = false,
+  focusBooking = "",
   onPaid,
 }: {
   payments?: boolean;
+  contracts?: boolean;
+  focusBooking?: string;
   onPaid?: () => void;
 }) {
   const [bookings, setBookings] = useState<View[]>([]);
@@ -65,6 +69,7 @@ export default function Bookings({
   const [filter, setFilter] = useState("Pending");
   const requestGeneration = useRef(0);
   const saving = useRef(false);
+  const bookingRequest = useRef("");
   const [updated, setUpdated] = useState("");
   const load = useCallback(async () => {
     if (saving.current) return;
@@ -115,6 +120,14 @@ export default function Bookings({
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [load]);
+  useEffect(() => {
+    if (!focusBooking || payments || contracts) return;
+    const booking = bookings.find((item) => item.id === focusBooking);
+    if (!booking) return;
+    setSelectedDate(booking.date);
+    setPast(booking.date < today());
+    setManagement(true);
+  }, [focusBooking, payments, contracts, bookings.length]);
   function chooseDate(date: string) {
     setSelectedDate(date);
     sessionStorage.setItem("stagebook-booking-date", date);
@@ -135,6 +148,12 @@ export default function Bookings({
               ],
             }
           : await request({ action, id, data });
+      if (action === "createBooking") bookingRequest.current = "";
+      if (result.bookingDate) {
+        setPast(result.bookingDate < today());
+        chooseDate(result.bookingDate);
+        setManagement(true);
+      }
       if (result.bookings) {
         setBookings(result.bookings);
         setUpdated(
@@ -168,7 +187,9 @@ export default function Bookings({
               ? "Saved. Some emails need attention below."
               : {
                   correctBooking:
-                    "Booking reopened. Sign the corrected terms from Google Sheets.",
+                    "Booking reopened. Review the corrected terms before issuing new contracts.",
+                  issueContracts:
+                    "Contracts queued. Check email status for delivery.",
                   approve:
                     "Company signature saved. Check email status for each signing request.",
                   resendInvitation:
@@ -187,8 +208,10 @@ export default function Bookings({
         setSelected([]);
         onPaid?.();
       }
+      return true;
     } catch (e) {
       setError((e as Error).message);
+      return false;
     } finally {
       saving.current = false;
       setBusy(false);
@@ -221,14 +244,18 @@ export default function Bookings({
         b.performance?.start || "99:99",
       ),
     );
-  const obligations = bookings.flatMap((booking) =>
+  const scopedBookings =
+    payments && focusBooking
+      ? bookings.filter((booking) => booking.id === focusBooking)
+      : bookings;
+  const obligations = scopedBookings.flatMap((booking) =>
     booking.members.map((member) => ({
       booking,
       member,
       key: booking.id + ":" + member.id,
     })),
   );
-  const unregistered = bookings
+  const unregistered = scopedBookings
     .filter((b) => !b.cancelled)
     .map((b) => ({
       booking: b,
@@ -241,7 +268,7 @@ export default function Bookings({
     (sum, { booking, missing }) => sum + booking.fee * missing,
     0,
   );
-  const unconfirmedLineups = bookings.filter(
+  const unconfirmedLineups = scopedBookings.filter(
     (b) => !b.cancelled && !b.performance,
   ).length;
   const pendingCost = obligations
@@ -292,8 +319,123 @@ export default function Bookings({
         </p>
       )}
       {!loaded && <p>Loading bookings…</p>}
-      {!payments ? (
+      {contracts ? (
         <>
+          <h2>Booking contracts</h2>
+          {bookings
+            .filter(
+              (booking) =>
+                !booking.cancelled &&
+                booking.approvedVersion !== booking.version,
+            )
+            .map((booking) => (
+              <div className="invite-row" key={booking.id}>
+                <span>
+                  <strong>{booking.act}</strong> · {bookingDate(booking.date)} ·{" "}
+                  {booking.contractStatus}
+                </span>
+                {!booking.sourceError &&
+                  booking.artistFirst &&
+                  booking.performance &&
+                  booking.members.length === booking.expectedMembers &&
+                  booking.fee > 0 &&
+                  booking.contractsVersion !== booking.version && (
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void act("issueContracts", booking.id)}
+                    >
+                      Issue signing requests
+                    </button>
+                  )}
+                {!booking.sourceError &&
+                  (booking.contractStatus === "Ready for venue signature" ||
+                    booking.contractStatus ===
+                      "Ready for company signature") && (
+                    <a className="link" href={"/?review=" + booking.id}>
+                      {booking.artistFirst
+                        ? "Review and countersign"
+                        : "Review booking contracts"}
+                    </a>
+                  )}
+              </div>
+            ))}
+        </>
+      ) : !payments ? (
+        <>
+          <details className="panel booking-form">
+            <summary>New booking</summary>
+            <form
+              onSubmit={(event) => {
+                const form = event.currentTarget;
+                const fields = values(event);
+                bookingRequest.current ||= crypto.randomUUID();
+                void act("createBooking", undefined, {
+                  ...fields,
+                  requestId: bookingRequest.current,
+                  fee: Math.round(Number(fields.fee) * 100),
+                  ticketPrice: Math.round(Number(fields.ticketPrice) * 100),
+                }).then((saved) => {
+                  if (saved) form.reset();
+                });
+              }}
+            >
+              <div className="grid">
+                <label>
+                  Performance date
+                  <input name="date" type="date" required />
+                </label>
+                <label>
+                  Artist or band
+                  <input name="act" required maxLength={300} />
+                </label>
+                <label>
+                  Contact name
+                  <input name="contactName" required maxLength={300} />
+                </label>
+                <label>
+                  Contact email
+                  <input
+                    name="contactEmail"
+                    type="email"
+                    required
+                    maxLength={254}
+                  />
+                </label>
+                <label>
+                  Contact phone (optional)
+                  <input name="contactPhone" type="tel" maxLength={50} />
+                </label>
+                <label>
+                  Responsible booker
+                  <input name="booker" required maxLength={300} />
+                </label>
+                <label>
+                  Fee per musician (DKK)
+                  <input
+                    name="fee"
+                    type="number"
+                    min="0.01"
+                    max={1000000}
+                    step="0.01"
+                    required
+                  />
+                </label>
+                <label>
+                  Ticket price (DKK)
+                  <input
+                    name="ticketPrice"
+                    type="number"
+                    min="0"
+                    max={1000000}
+                    step="0.01"
+                    required
+                  />
+                </label>
+              </div>
+              <button disabled={busy}>Save booking</button>
+            </form>
+          </details>
           <div className="row booking-toolbar">
             <button
               className="link"
@@ -540,14 +682,97 @@ export default function Bookings({
                               musicians registered ·{" "}
                               {booking.cancelled
                                 ? "Cancelled"
-                                : booking.approvedVersion === booking.version
-                                  ? "Company signed"
-                                  : "Awaiting approval"}
+                                : booking.contractStatus}
                             </p>
                             {booking.sourceError && (
                               <p className="error">{booking.sourceError}</p>
                             )}
                             <Schedule booking={booking} />
+                            {booking.date <= today() &&
+                              !booking.cancelled &&
+                              !booking.sourceError &&
+                              booking.artistFirst && (
+                                <form
+                                  className="booking-form"
+                                  onSubmit={(event) => {
+                                    const fields = values(event);
+                                    void act("ticketSales", booking.id, {
+                                      sold: Number(fields.sold),
+                                    });
+                                  }}
+                                >
+                                  <div className="row">
+                                    <label>
+                                      Tickets sold
+                                      <input
+                                        name="sold"
+                                        type="number"
+                                        step="1"
+                                        min="0"
+                                        max="1000000"
+                                        defaultValue={
+                                          booking.operations?.ticketsSold
+                                        }
+                                        required
+                                      />
+                                    </label>
+                                    <button
+                                      className="secondary"
+                                      disabled={busy}
+                                    >
+                                      Save ticket sales
+                                    </button>
+                                  </div>
+                                  {booking.operations?.ticketsSold !==
+                                    undefined &&
+                                    typeof booking.operations.ticketPrice ===
+                                      "number" && (
+                                      <p className="fine">
+                                        Ticket revenue ·{" "}
+                                        {money(
+                                          Math.round(
+                                            booking.operations.ticketPrice *
+                                              booking.operations.ticketsSold *
+                                              100,
+                                          ),
+                                        )}
+                                      </p>
+                                    )}
+                                </form>
+                              )}
+                            {booking.promotion &&
+                              (booking.promotion.bio ||
+                                booking.promotion.photoUrl ||
+                                booking.promotion.website) && (
+                                <details className="booking-form">
+                                  <summary>Promotion details</summary>
+                                  {booking.promotion.bio && (
+                                    <p>{booking.promotion.bio}</p>
+                                  )}
+                                  {booking.promotion.photoUrl && (
+                                    <p>
+                                      <a
+                                        href={booking.promotion.photoUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                      >
+                                        Press photo
+                                      </a>
+                                    </p>
+                                  )}
+                                  {booking.promotion.website && (
+                                    <p>
+                                      <a
+                                        href={booking.promotion.website}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                      >
+                                        Artist website
+                                      </a>
+                                    </p>
+                                  )}
+                                </details>
+                              )}
                             <BookingChecklist booking={booking} />
                             <p>
                               {booking.fee ? (
@@ -1291,17 +1516,25 @@ function BookingChecklist({ booking }: { booking: View }) {
         ? "Ask the band contact for the schedule"
         : registered !== booking.expectedMembers
           ? "Share the musician registration link"
-          : !company
-            ? "Sign for the venue from the Bookings sheet"
-            : signed < registered
-              ? "Follow up on unsigned contracts"
-              : recorded < registered
+          : booking.artistFirst && !company
+            ? signed < registered
+              ? booking.contractsVersion === booking.version
+                ? "Waiting for musician signatures"
+                : "Check signing requests under Contracts"
+              : !booking.confirmedAt
                 ? "Record who performed"
-                : booking.members.some((m) => m.status === "Ready to pay")
-                  ? "Process the ready payments"
-                  : paid < registered
-                    ? "Review any performance exceptions"
-                    : "Complete";
+                : "Review countersignature under Contracts"
+            : !company
+              ? "Sign for the venue from Contracts or the Bookings sheet"
+              : signed < registered
+                ? "Follow up on unsigned contracts"
+                : recorded < registered
+                  ? "Record who performed"
+                  : booking.members.some((m) => m.status === "Ready to pay")
+                    ? "Process the ready payments"
+                    : paid < registered
+                      ? "Review any performance exceptions"
+                      : "Complete";
   return (
     <div className="booking-progress">
       <p>
