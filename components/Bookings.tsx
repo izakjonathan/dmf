@@ -632,16 +632,6 @@ export default function Bookings({
                               ))}
                             </ul>
                             {!booking.cancelled &&
-                              booking.approvedVersion !== booking.version && (
-                                <a
-                                  href={
-                                    "/?review=" + encodeURIComponent(booking.id)
-                                  }
-                                >
-                                  Review, sign and send contracts
-                                </a>
-                              )}
-                            {!booking.cancelled &&
                               !booking.members.some((m) => m.paymentId) && (
                                 <details className="booking-form">
                                   <summary>Correct terms or roster</summary>
