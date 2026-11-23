@@ -74,6 +74,13 @@ test("booking API completes registration, signatures, attendance and payment wit
         return { state: structuredClone(state) };
       }
       if (action === "auditView") return { ok: true };
+      if (action === "sensitiveView") {
+        const id = (options as { musicianId?: string } | undefined)?.musicianId;
+        const entry = state.musicians.find((m) => m.id === id);
+        return {
+          records: entry ? [{ account: "••••" + entry.account.slice(-4) }] : [],
+        };
+      }
       assert.equal(action, "sheetBookingReview");
       assert.equal(options?.id, bookingId);
       if (!sheetReady) throw new RequestError("Booking source changed", 409);
@@ -251,6 +258,7 @@ test("booking API completes registration, signatures, attendance and payment wit
         sets: 2,
         minutesPerSet: 45,
         soundcheck: "Yes",
+        soundcheckTime: "20:00",
         requests: "Microphone",
       },
       expectedMembers: 2,
@@ -272,6 +280,7 @@ test("booking API completes registration, signatures, attendance and payment wit
         sets: 2,
         minutesPerSet: 45,
         soundcheck: "Yes",
+        soundcheckTime: "20:00",
       },
       expectedMembers: 2,
       fee: 315000,
@@ -306,7 +315,8 @@ test("booking API completes registration, signatures, attendance and payment wit
       )
     ).json();
     assert.equal(verified.profile.email, person.email);
-    assert.equal(verified.profile.account, person.account);
+    assert.equal(verified.profile.account, undefined);
+    assert.equal(verified.masked.account, "••••" + person.account.slice(-4));
     assert.equal(verified.profile.cpr, undefined);
     const submitted = await artist.POST(
       post({
@@ -325,13 +335,13 @@ test("booking API completes registration, signatures, attendance and payment wit
     sets: 2,
     minutesPerSet: 45,
     soundcheck: "Yes",
+    soundcheckTime: "20:00",
     requests: "Microphone",
   };
   const unauthorisedAct = await artist.POST(
     post({
       action: "act",
       privacyAcknowledged: "on",
-      verification: proofs.get(musician.email),
       performance: schedule,
       expectedMembers: 2,
       fee: 315000,
@@ -343,12 +353,15 @@ test("booking API completes registration, signatures, attendance and payment wit
     post({
       action: "act",
       privacyAcknowledged: "on",
-      verification: proofs.get(contact.email),
       performance: schedule,
       expectedMembers: 2,
       fee: 315000,
     }),
-    context,
+    {
+      params: Promise.resolve({
+        token: hash(bookingModel.contactBookingId(state.bookings![0])),
+      }),
+    },
   );
   assert.equal(updatedAct.status, 200);
   administrator = false;
@@ -372,31 +385,56 @@ test("booking API completes registration, signatures, attendance and payment wit
   const staffEndpoint = "https://example.com/api/bookings?night=" + staffLink;
   administrator = false;
   const staffView = await (await owner.GET(new Request(staffEndpoint))).json();
-  assert.equal(staffView.staff.name, "Night Employee");
-  assert.equal(staffView.bookings[0].members[0].email, undefined);
-  assert.equal(staffView.bookings[0].members[0].payout, undefined);
-  assert.equal(staffView.bookings[0].fee, undefined);
+  assert.deepEqual(Object.keys(staffView).sort(), ["bookings", "day"]);
+  assert.deepEqual(Object.keys(staffView.bookings[0]).sort(), [
+    "act",
+    "attendance",
+    "end",
+    "genre",
+    "getIn",
+    "id",
+    "minutesPerSet",
+    "musicianCount",
+    "notes",
+    "requests",
+    "sets",
+    "soundcheck",
+    "soundcheckTime",
+    "start",
+  ]);
+  assert.equal(staffView.bookings[0].attendance, "pending");
   assert.equal(
     (await owner.POST(post({ action: "paid" }, staffEndpoint))).status,
     403,
   );
+  const beforeAttendance = structuredClone(state);
+  const reported = await owner.POST(
+    post(
+      {
+        action: "attendance",
+        id: bookingId,
+        data: { result: "deviation", note: "Set shortened" },
+      },
+      staffEndpoint,
+    ),
+  );
+  assert.equal(reported.status, 200);
+  assert.equal((await reported.json()).bookings[0].attendance, "deviation");
+  assert.equal(state.bookings![0].attendanceNote, "Set shortened");
+  assert.ok(state.bookings![0].members.every((m) => m.attendance === "issue"));
+  state = beforeAttendance;
   const attended = await owner.POST(
     post(
       {
         action: "attendance",
         id: bookingId,
-        data: {
-          by: "Untrusted name",
-          members: state.bookings![0].members.map((m) => ({
-            id: m.id,
-            status: "played",
-          })),
-        },
+        data: { result: "performed" },
       },
       staffEndpoint,
     ),
   );
   assert.equal(attended.status, 200);
+  assert.ok(state.bookings![0].members.every((m) => m.attendance === "played"));
   assert.equal(state.bookings![0].confirmedBy, "Night Employee");
   administrator = true;
   assert.equal(
@@ -578,6 +616,8 @@ test("booking API completes registration, signatures, attendance and payment wit
         sets: 2,
         minutesPerSet: 40,
         soundcheck: "No",
+        genre: "Folk",
+        getIn: "19:00",
       },
       expectedMembers: 1,
       fee: booking.fee,
@@ -618,6 +658,9 @@ test("booking API completes registration, signatures, attendance and payment wit
   const [invite] = state.invites;
   assert.ok(invite);
   assert.equal(invite.offer!.organizerSignedAt, undefined);
+  assert.equal(invite.offer!.genre, "Folk");
+  assert.equal(invite.offer!.getIn, "19:00");
+  assert.equal(invite.offer!.soundcheckRequired, "No");
   assert.equal(
     state.bookingMail!.some(
       (mail) => mail.id === "contract:" + invite.id && mail.status === "sent",
@@ -715,4 +758,11 @@ test("booking API completes registration, signatures, attendance and payment wit
   assert.equal((await record()).status, 200);
   assert.equal((await record()).status, 409);
   assert.equal(state.payments.length, historyCount + 1);
+  const old = state.bookings![0];
+  old.date = "2020-01-01";
+  assert.equal(
+    (await artist.GET(new Request("https://example.com/api/bookings"), context))
+      .status,
+    410,
+  );
 });

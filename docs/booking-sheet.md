@@ -83,3 +83,24 @@ After saves and the next scheduled sync, financial and registration projections 
 | AO–AQ | Act bio, press photo and artist website. |
 
 The new ticket calculation has its own columns. The original manual entrance income and guest count fields can still be used.
+
+| Column | Technical schedule field | Source |
+| --- | --- | --- |
+| AT | Genre | Band contact |
+| AU | Get-in | Band contact or venue override, stored as a time |
+| AV | Soundcheck | Yes or No |
+| AW | Soundcheck time | Only when Yes, stored as a time |
+| AX | Ends | Stored as a time; an end earlier than the start is next day |
+| AY | Technical notes | Notes supplied for the venue technician |
+
+These columns are appended after the existing booking action columns during
+booking sync. Enter changes in Stagebook while contract terms are open. If an
+agreement has already been issued, use the existing correction workflow before
+changing its schedule. Use same-day clock times before the performance start for
+get-in and soundcheck.
+
+A fee below the applicable DMF tariff shows an advisory note on the fee cell in
+column S. It does not stop booking or contract processing. Set
+`BOOKER_TARIFF_WARNING_EMAIL` in Apps Script to opt in and route below-tariff
+creation and fee-change notices to the booker's address. Leave it unset to keep
+these warnings on screen and in the workbook only.

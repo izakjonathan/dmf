@@ -1,7 +1,10 @@
 "use client";
 
+import { useState } from "react";
+
 import {
-  dmfTemplate,
+  dmfConditionsVersion,
+  originalDmfPdf,
   money,
   today,
   type ArtistPerformance,
@@ -9,15 +12,32 @@ import {
   type SignedContract,
 } from "@/lib/model";
 
-export function ContractLink({
-  template = dmfTemplate,
-}: {
-  template?: ContractOffer["template"];
-}) {
+export function ContractLink() {
   return (
-    <a href={template.url} target="_blank" rel="noreferrer">
-      Read the DMF standard contract (PDF)
+    <a href={originalDmfPdf} target="_blank" rel="noreferrer">
+      View the original DMF standard contract (Danish)
     </a>
+  );
+}
+
+function DmfConditions() {
+  return (
+    <section className="contract-conditions">
+      <h3>Conditions</h3>
+      <ul>
+        <li>Cancellation cannot take place.</li>
+        <li>If the event is open to the public, the venue pays Koda.</li>
+        <li>
+          No sound or video recording of the performance without prior written
+          agreement.
+        </li>
+      </ul>
+      {/* Pending legal review by DMF or the venue's lawyer. */}
+      <p>
+        This agreement follows the original Danish DMF Standardkontrakt. The
+        Danish original prevails if the two differ.
+      </p>
+    </section>
   );
 }
 
@@ -48,9 +68,12 @@ export function PaymentContractFields() {
 
 export function ArtistPerformanceFields({
   value,
+  contact = false,
 }: {
   value?: Partial<ArtistPerformance>;
+  contact?: boolean;
 }) {
+  const [soundcheck, setSoundcheck] = useState(value?.soundcheck || "");
   return (
     <fieldset className="form-fieldset">
       <legend>Performance details</legend>
@@ -73,7 +96,10 @@ export function ArtistPerformanceFields({
           <select
             name="soundcheck"
             required
-            defaultValue={value?.soundcheck || ""}
+            value={soundcheck}
+            onChange={(event) =>
+              setSoundcheck(event.target.value as typeof soundcheck)
+            }
           >
             <option value="" disabled>
               Select yes or no
@@ -82,6 +108,29 @@ export function ArtistPerformanceFields({
             <option>No</option>
           </select>
         </label>
+        {soundcheck === "Yes" && (
+          <label>
+            Soundcheck time
+            <input
+              name="soundcheckTime"
+              type="time"
+              defaultValue={value?.soundcheckTime}
+              required={contact}
+            />
+          </label>
+        )}
+        {contact && (
+          <>
+            <label>
+              Genre description
+              <input name="genre" maxLength={300} defaultValue={value?.genre} />
+            </label>
+            <label>
+              Get-in time
+              <input name="getIn" type="time" defaultValue={value?.getIn} />
+            </label>
+          </>
+        )}
         <label>
           Number of sets
           <input
@@ -105,9 +154,21 @@ export function ArtistPerformanceFields({
           />
         </label>
       </div>
+      {contact && (
+        <label>
+          Technical notes (optional)
+          <textarea
+            name="technicalNotes"
+            maxLength={1000}
+            rows={2}
+            defaultValue={value?.technicalNotes}
+          />
+        </label>
+      )}
       <label>
         Requests (optional)
         <textarea
+          aria-label="Requests for venue technicians. Leave out personal details."
           name="requests"
           rows={2}
           maxLength={2000}
@@ -137,7 +198,7 @@ export function ContractTerms({
   return (
     <>
       <p>
-        <ContractLink template={offer.template} />
+        <ContractLink />
       </p>
       <dl className="contract-terms">
         <dt>Organizer</dt>
@@ -194,10 +255,16 @@ export function ContractTerms({
             <dd>{offer.getIn}</dd>
           </>
         )}
-        {offer.soundcheck && (
+        {offer.genre && (
+          <>
+            <dt>Genre</dt>
+            <dd>{offer.genre}</dd>
+          </>
+        )}
+        {(offer.soundcheck || offer.soundcheckRequired) && (
           <>
             <dt>Soundcheck</dt>
-            <dd>{offer.soundcheck}</dd>
+            <dd>{offer.soundcheck || offer.soundcheckRequired}</dd>
           </>
         )}
         <dt>Fee</dt>
@@ -243,6 +310,7 @@ export function ContractTerms({
           )}
         </dd>
       </dl>
+      {offer.conditionsVersion === dmfConditionsVersion && <DmfConditions />}
     </>
   );
 }

@@ -1,30 +1,35 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { Booking } from "@/lib/bookings";
 import { today } from "@/lib/model";
-import { AttendanceEditor, type AttendanceInput } from "./AttendanceEditor";
 import { ViewportTheme } from "./ViewportTheme";
 
-type Act = Pick<
-  Booking,
-  | "id"
-  | "act"
-  | "date"
-  | "expectedMembers"
-  | "performance"
-  | "confirmedAt"
-  | "confirmedBy"
-  | "attendanceNote"
-  | "cancelled"
-  | "sourceError"
-> & {
-  attendanceLocked: boolean;
-  workflowStatus: string;
-  members: Pick<Booking["members"][number], "id" | "name" | "attendance">[];
+type Act = {
+  id: string;
+  act: string;
+  musicianCount: number;
+  genre: string;
+  start: string;
+  end: string;
+  sets: number | null;
+  minutesPerSet: number | null;
+  getIn: string;
+  soundcheck: "Yes" | "No" | null;
+  soundcheckTime: string;
+  requests: string;
+  notes: string;
+  attendance: "unavailable" | "pending" | "performed" | "deviation";
 };
-type Night = { staff: { day: string; name: string }; bookings: Act[] };
-
+type Night = { day: string; bookings: Act[] };
+type Attendance =
+  | { result: "performed" }
+  | { result: "deviation"; note: string };
+const status = {
+  unavailable: "Check with venue",
+  pending: "Attendance pending",
+  performed: "Performed as agreed",
+  deviation: "Reported to venue",
+};
 export default function NightShift({ token }: { token: string }) {
   const [night, setNight] = useState<Night>();
   const [error, setError] = useState("");
@@ -64,13 +69,17 @@ export default function NightShift({ token }: { token: string }) {
     };
   }, [request]);
 
-  async function save(id: string, data: AttendanceInput) {
+  async function save(id: string, data: Attendance) {
     setBusy(true);
     setError("");
     setNotice("");
     try {
       setNight(await request({ action: "attendance", id, data }));
-      setNotice("Performance recorded.");
+      setNotice(
+        data.result === "deviation"
+          ? "Deviation recorded for venue review."
+          : "Performance recorded.",
+      );
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -82,12 +91,7 @@ export default function NightShift({ token }: { token: string }) {
       <ViewportTheme />
       <header>
         <h1>Night overview</h1>
-        {night && (
-          <p>
-            {night.staff.day.split("-").reverse().join("/")} ·{" "}
-            {night.staff.name}
-          </p>
-        )}
+        {night && <p>{night.day.split("-").reverse().join("/")}</p>}
       </header>
       {error && (
         <p className="error" role="alert">
@@ -100,107 +104,84 @@ export default function NightShift({ token }: { token: string }) {
         </p>
       )}
       {!night && !error && <p>Opening night overview…</p>}
-      {night?.bookings
-        .slice()
-        .sort((a, b) =>
-          (a.performance?.start || "99:99").localeCompare(
-            b.performance?.start || "99:99",
-          ),
-        )
-        .map((act) => {
-          const missing = Math.max(0, act.expectedMembers - act.members.length);
-          const completeAttendance = act.members.every(
-            (member) => member.attendance,
-          );
-          const canRecord =
-            !act.cancelled &&
-            !act.sourceError &&
-            !act.attendanceLocked &&
-            act.date <= today();
-          return (
-            <details key={act.id} className="night-act booking-act-card">
-              <summary className="act-card-summary">
-                <span className="act-card-title">
-                  <strong>{act.act}</strong>
-                  <small>
-                    {act.cancelled
-                      ? "Cancelled"
-                      : act.confirmedAt && completeAttendance
-                        ? "Attendance recorded"
-                        : missing
-                          ? missing + " registrations missing"
-                          : "Registration complete"}
-                  </small>
-                </span>
-                <span className="act-card-meta">
-                  {act.performance?.start || "Time pending"}
-                  <span className="card-chevron" aria-hidden="true" />
-                </span>
-              </summary>
-              <div className="act-card-body">
-                {act.performance ? (
-                  <p>
-                    <strong>
-                      {act.performance.start}–{act.performance.end}
-                    </strong>{" "}
-                    · {act.performance.sets} × {act.performance.minutesPerSet}{" "}
-                    min · Soundcheck {act.performance.soundcheck.toLowerCase()}
-                  </p>
-                ) : (
-                  <p>Schedule pending</p>
-                )}
-                <p className="fine">{act.workflowStatus}</p>
-                {act.performance?.requests && (
-                  <p className="fine">{act.performance.requests}</p>
-                )}
-                {act.members.length > 0 && (
-                  <ul className="night-members">
-                    {act.members.map((member) => (
-                      <li key={member.id}>{member.name}</li>
-                    ))}
-                  </ul>
-                )}
-                {act.confirmedAt && (
-                  <p className="fine">
-                    Recorded by {act.confirmedBy}
-                    {act.attendanceNote && " · " + act.attendanceNote}
-                  </p>
-                )}
-                {act.sourceError && <p className="fine">{act.sourceError}</p>}
-                {act.date > today() && (
-                  <p className="fine">
-                    Attendance opens on the performance date.
-                  </p>
-                )}
-                {canRecord && !missing && !act.confirmedAt && (
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void save(act.id, {
-                        by: night.staff.name,
-                        note: "",
-                        members: act.members.map((member) => ({
-                          id: member.id,
-                          status: "played",
-                        })),
-                      })
-                    }
+      {night && !night.bookings.length && <p>No acts scheduled.</p>}
+      {night?.bookings.map((act) => (
+        <details key={act.id} className="night-act booking-act-card">
+          <summary className="act-card-summary">
+            <span className="act-card-title">
+              <strong>{act.act}</strong>
+              <small>
+                {act.musicianCount}{" "}
+                {act.musicianCount === 1 ? "musician" : "musicians"} ·{" "}
+                {status[act.attendance]}
+              </small>
+            </span>
+            <span className="act-card-meta">
+              {act.start || "Time pending"}
+              <span className="card-chevron" aria-hidden="true" />
+            </span>
+          </summary>
+          <div className="act-card-body">
+            {act.genre && <p>{act.genre}</p>}
+            {act.start ? (
+              <p>
+                <strong>
+                  {act.start}–{act.end}
+                </strong>{" "}
+                · {act.sets} × {act.minutesPerSet} min
+              </p>
+            ) : (
+              <p>Schedule pending</p>
+            )}
+            {act.getIn && <p>Get-in · {act.getIn}</p>}
+            {act.soundcheck && (
+              <p>
+                Soundcheck · {act.soundcheck}
+                {act.soundcheckTime && " · " + act.soundcheckTime}
+              </p>
+            )}
+            {act.requests && <p>Special requests · {act.requests}</p>}
+            {act.notes && <p className="fine">{act.notes}</p>}
+            {act.attendance === "pending" && night.day > today() && (
+              <p className="fine">Attendance opens on the performance date.</p>
+            )}
+            {act.attendance === "pending" && night.day <= today() && (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void save(act.id, { result: "performed" })}
+                >
+                  Performed as agreed
+                </button>
+                <details>
+                  <summary>Something differed</summary>
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const note = String(
+                        new FormData(event.currentTarget).get("note") || "",
+                      );
+                      void save(act.id, { result: "deviation", note });
+                    }}
                   >
-                    Everyone played as agreed
-                  </button>
-                )}
-                {canRecord && (
-                  <AttendanceEditor
-                    booking={act}
-                    busy={busy}
-                    by={night.staff.name}
-                    onSave={(data) => void save(act.id, data)}
-                  />
-                )}
-              </div>
-            </details>
-          );
-        })}
+                    <label>
+                      What differed?
+                      <textarea
+                        name="note"
+                        required
+                        maxLength={2000}
+                        rows={3}
+                      />
+                    </label>
+                    <button disabled={busy}>Send to venue</button>
+                  </form>
+                </details>
+              </>
+            )}
+          </div>
+        </details>
+      ))}
     </main>
   );
 }

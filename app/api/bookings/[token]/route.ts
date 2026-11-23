@@ -1,8 +1,10 @@
 import { acknowledgePrivacy } from "@/lib/privacy";
 import { z } from "zod";
 import {
-  artistPerformanceSchema,
+  artistPerformanceSubmissionSchema,
   musicianSchema,
+  musicianProfileSchema,
+  publicMusician,
   venueSchema,
   type Workspace,
 } from "@/lib/model";
@@ -23,6 +25,7 @@ import {
 } from "@/lib/server";
 import {
   bookingRegistrationClosed,
+  bookingRegistrationExpired,
   contactBookingId,
   issueBookingContracts,
   type Booking,
@@ -44,6 +47,11 @@ function findBooking(state: Workspace, raw: string) {
     booking.sourceError
   )
     throw new RequestError("This booking is unavailable or cancelled.", 404);
+  if (bookingRegistrationExpired(booking))
+    throw new RequestError(
+      "This registration link has expired. Contact the venue.",
+      410,
+    );
   return booking;
 }
 function verify(state: Workspace, booking: Booking, raw: string) {
@@ -53,6 +61,7 @@ function verify(state: Workspace, booking: Booking, raw: string) {
     (p) =>
       p.bookingId === booking.id &&
       p.hash === hash(raw) &&
+      !p.usedAt &&
       p.expiresAt > new Date().toISOString(),
   );
   if (!proof)
@@ -111,19 +120,16 @@ export async function GET(req: Request, context: Context) {
       state.musicians.find(
         (m) => !m.deletedAt && m.email.toLowerCase() === proof.email,
       );
-    const { cpr, ...safeProfile } = profile || {};
-    if (profile)
-      await sheets("auditView", {
-        viewer: "musician",
-        bookingId: booking.id,
-        musicianId: profile.id,
-      });
+    const masked = profile
+      ? (await sheets("sensitiveView", { musicianId: profile.id })).records[0]
+      : undefined;
     return json({
       ...publicDetails(state, booking),
       email: proof.email,
       isContact: isContact || proof.email === booking.contactEmail,
       sharedPath,
-      profile: profile ? safeProfile : null,
+      profile: profile ? publicMusician(profile) : null,
+      masked,
       paymentType: booking.members.find((m) => m.email === proof.email)
         ?.paymentType,
       registered: booking.members.some((m) => m.email === proof.email),
@@ -246,7 +252,9 @@ export async function POST(req: Request, context: Context) {
       const contactPrivacyAcknowledgement = acknowledgePrivacy(
         body.privacyAcknowledged,
       );
-      const performance = artistPerformanceSchema.parse(body.performance);
+      const performance = artistPerformanceSubmissionSchema.parse(
+        body.performance,
+      );
       const expected = z.coerce
         .number()
         .int()
@@ -293,17 +301,15 @@ export async function POST(req: Request, context: Context) {
       const privacyAcknowledgement = acknowledgePrivacy(
         body.privacyAcknowledged,
       );
-      const input = musicianSchema.parse(body.profile);
+      const candidate = musicianProfileSchema.parse(body.profile);
       const paymentType = z
         .enum(["Cash", "Bank transfer", "Mobilepay"])
-        .parse(input.preferredPaymentType);
-      if (paymentType === "Mobilepay" && !input.phone.trim())
-        throw new RequestError("Enter your Mobilepay phone number.");
-      if (proof && input.email !== proof.email)
+        .parse(candidate.preferredPaymentType);
+      if (proof && candidate.email !== proof.email)
         throw new RequestError("Use your verified email address.", 403);
       // A shared booking link may create a profile, but never retrieve or
       // overwrite a previously saved musician's private/payment information.
-      const member = booking.members.find((m) => m.email === input.email);
+      const member = booking.members.find((m) => m.email === candidate.email);
       const existing = proof
         ? state.musicians.find(
             (m) =>
@@ -312,6 +318,11 @@ export async function POST(req: Request, context: Context) {
               m.id !== member?.musicianId,
           ) || state.musicians.find((m) => m.id === member?.musicianId)
         : undefined;
+      const savedMethod = existing?.preferredPaymentType || "Bank transfer";
+      const input =
+        existing?.sensitiveRef && savedMethod === paymentType
+          ? candidate
+          : musicianSchema.parse(body.profile);
       if (member && !proof)
         throw new RequestError(
           "Details have already been submitted for this email. Contact the venue for changes.",
@@ -342,14 +353,30 @@ export async function POST(req: Request, context: Context) {
       if (existing)
         state.musicians[state.musicians.indexOf(existing)] = profile;
       else state.musicians.push(profile);
-      const { registration, account, iban, phone, payee, cvr } = profile;
-      const payout = { registration, account, iban, phone, payee, cvr };
+      const {
+        registration,
+        account,
+        iban,
+        phone,
+        payee,
+        cvr,
+        mobilePayNumber,
+      } = profile;
+      const payout = {
+        registration,
+        account,
+        iban,
+        payee,
+        cvr,
+        mobilePayNumber,
+      };
       const { name, email, address, band } = profile;
       const performer = { name, email, address, phone, band, cvr, payee };
       if (member)
         Object.assign(member, {
           performer,
           payout,
+          sensitiveRef: profile.sensitiveRef,
           name: profile.name,
           musicianId: profile.id,
           privacyAcknowledgement,
@@ -364,11 +391,14 @@ export async function POST(req: Request, context: Context) {
           email: profile.email,
           performer,
           payout,
+          sensitiveRef: profile.sensitiveRef,
           paymentType,
         });
     } else throw new RequestError("Unknown booking action.");
     // Any material artist change invalidates a draft version before company approval.
     booking.version++;
+    if (proof && body.action === "register")
+      proof.usedAt = new Date().toISOString();
     const complete =
       booking.performance && booking.members.length === booking.expectedMembers;
     if (

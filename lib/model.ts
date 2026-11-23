@@ -42,11 +42,16 @@ export function validIban(iban: string) {
 const clock = z
   .string()
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time.");
+export const optionalClock = z.union([clock, z.literal("")]);
 export const artistPerformanceSchema = z
   .object({
     start: clock,
     end: clock,
     soundcheck: z.enum(["Yes", "No"]),
+    genre: text.optional(),
+    getIn: optionalClock.optional(),
+    soundcheckTime: optionalClock.optional(),
+    technicalNotes: z.string().trim().max(1000).optional(),
     sets: z.coerce.number().int().min(1).max(30),
     minutesPerSet: z.coerce.number().int().min(1).max(720),
     requests: z.string().trim().max(2000).default(""),
@@ -62,31 +67,63 @@ export const artistPerformanceSchema = z
     return (
       value.start === value.end || value.sets * value.minutesPerSet <= slot
     );
-  }, "The sets must fit between the start and end times.");
+  }, "The sets must fit between the start and end times.")
+  .refine((p) => !p.getIn || p.getIn < p.start, {
+    path: ["getIn"],
+    message: "Get-in must be before the start time.",
+  })
+  .refine(
+    (p) =>
+      !p.soundcheckTime ||
+      (p.soundcheck === "Yes" && p.soundcheckTime < p.start),
+    {
+      path: ["soundcheckTime"],
+      message: "Enter a soundcheck time before the start, or select No.",
+    },
+  );
+export const artistPerformanceSubmissionSchema = artistPerformanceSchema.refine(
+  (p) => p.soundcheck === "No" || Boolean(p.soundcheckTime),
+  { path: ["soundcheckTime"], message: "Enter the soundcheck time." },
+);
+export function contractPerformance(artist: ArtistPerformance) {
+  return {
+    start: artist.start,
+    end: artist.end,
+    sets: artist.sets,
+    minutesPerSet: artist.minutesPerSet,
+    getIn: artist.getIn || "",
+    genre: artist.genre || undefined,
+    soundcheck: artist.soundcheckTime || "",
+    soundcheckRequired: artist.soundcheck,
+    requests: artist.requests,
+  };
+}
 export type ArtistPerformance = z.infer<typeof artistPerformanceSchema>;
 
-export const musicianSchema = z
-  .object({
-    name: text.min(2),
-    email,
-    phone: text,
-    address: text.min(5),
-    band: text,
-    payee: z.enum(["Individual", "Business"]),
-    preferredPaymentType: z
-      .enum(["Cash", "Bank transfer", "Mobilepay"])
-      .optional(),
-    cvr: z.string().regex(/^(\d{8})?$/),
-    cpr: z.string().regex(/^(\d{6}-?\d{4})?$/),
-    registration: z.string().default(""),
-    account: z.string().default(""),
-    iban: z
-      .string()
-      .max(100)
-      .default("")
-      .transform((value) => value.replace(/\s+/g, "").toUpperCase()),
-  })
-  .superRefine((value, ctx) => {
+const musicianFields = z.object({
+  name: text.min(2),
+  email,
+  phone: text,
+  address: text.min(5),
+  band: text,
+  payee: z.enum(["Individual", "Business"]),
+  preferredPaymentType: z
+    .enum(["Cash", "Bank transfer", "Mobilepay"])
+    .optional(),
+  cvr: z.string().regex(/^(\d{8})?$/),
+  cpr: z.string().regex(/^(\d{6}-?\d{4})?$/),
+  mobilePayNumber: z.string().trim().default(""),
+  registration: z.string().default(""),
+  account: z.string().default(""),
+  iban: z
+    .string()
+    .max(100)
+    .default("")
+    .transform((value) => value.replace(/\s+/g, "").toUpperCase()),
+});
+
+function withPaymentValidation(allowSaved: boolean) {
+  return musicianFields.superRefine((value, ctx) => {
     function issue(path: string, message: string) {
       ctx.addIssue({ code: "custom", path: [path], message });
     }
@@ -94,12 +131,14 @@ export const musicianSchema = z
       issue("cvr", "Enter the business CVR.");
     if (
       value.preferredPaymentType === "Mobilepay" &&
-      (!/^\+?[\d() .-]+$/.test(value.phone) ||
-        !/^\d{8,15}$/.test(value.phone.replace(/\D/g, "")))
+      !(allowSaved && !value.mobilePayNumber) &&
+      (!/^\+?[\d() .-]+$/.test(value.mobilePayNumber) ||
+        !/^\d{8,15}$/.test(value.mobilePayNumber.replace(/\D/g, "")))
     )
-      issue("phone", "Enter a valid MobilePay phone number.");
+      issue("mobilePayNumber", "Enter a valid MobilePay phone number.");
     if (
-      (value.preferredPaymentType === "Cash" ||
+      (allowSaved ||
+        value.preferredPaymentType === "Cash" ||
         value.preferredPaymentType === "Mobilepay") &&
       !value.iban &&
       !value.registration &&
@@ -117,11 +156,17 @@ export const musicianSchema = z
     if (!/^\d{6,10}$/.test(value.account))
       issue("account", "Enter a bank account number with 6–10 digits.");
   });
+}
+export const musicianSchema = withPaymentValidation(false);
+export const musicianProfileSchema = withPaymentValidation(true);
 
 export const dmfTemplate = {
   version: "dmf-standardkontrakt-red-2019",
   url: "https://dmf.dk/sites/default/files/paragraph/field_files/Standardkontrakt%20R%C3%98D.pdf",
 } as const;
+
+export const dmfConditionsVersion = "dmf-red-2019-en-1";
+export const originalDmfPdf = "/legal/DMF_Standardkontrakt.pdf";
 
 const accepted = z.literal("on", {
   message: "Confirm that you agree to the contract.",
@@ -155,6 +200,9 @@ export type ContractOffer = Omit<
   "accepted"
 > & {
   artistPerformance?: boolean;
+  genre?: string;
+  conditionsVersion?: typeof dmfConditionsVersion;
+  soundcheckRequired?: "Yes" | "No";
   requests?: string;
   paymentType?: "Cash" | "Bank transfer" | "Mobilepay";
   performerEmail: string;
@@ -201,8 +249,13 @@ export const paymentSchema = z.object({
   notes: z.string().trim().max(2000),
 });
 export type Venue = z.infer<typeof venueSchema>;
-export type Musician = Omit<z.infer<typeof musicianSchema>, "iban"> & {
+export type Musician = Omit<
+  z.infer<typeof musicianSchema>,
+  "iban" | "mobilePayNumber"
+> & {
   iban?: string;
+  mobilePayNumber?: string;
+  sensitiveRef?: string;
   performance?: ArtistPerformance;
   id: string;
   createdAt: string;
@@ -295,6 +348,16 @@ export function isoWeek(date: string) {
 export function tariff(date: string) {
   if (date < "2026-04-01") return 0;
   return date >= "2027-04-01" ? 320000 : 315000;
+}
+export function tariffWarning(date: string, fee: number) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(fee) || fee <= 0)
+    return "";
+  const minimum = tariff(date);
+  return fee < minimum
+    ? "This fee is below DMF's minimum tariff of " +
+        (minimum / 100).toLocaleString("en-GB") +
+        " kr per musician."
+    : "";
 }
 export function hasOtherPaymentPath(
   state: Workspace,
@@ -389,7 +452,7 @@ export function paymentRecords(state: Workspace, input: unknown): Payment[] {
 export const musicianEditSchema = z.object({
   id: z.string().uuid(),
   updatedAt: z.string(),
-  profile: musicianSchema,
+  profile: musicianProfileSchema,
 });
 
 export function updateMusician(
@@ -413,6 +476,14 @@ export function updateMusician(
   )
     return "That email is already registered to another musician.";
 
+  const validation = (
+    current.sensitiveRef &&
+    (input.profile.preferredPaymentType || "Bank transfer") ===
+      (current.preferredPaymentType || "Bank transfer")
+      ? musicianProfileSchema
+      : musicianSchema
+  ).safeParse(input.profile);
+  if (!validation.success) return validation.error.issues[0].message;
   state.musicians[index] = {
     ...current,
     ...input.profile,
@@ -489,6 +560,7 @@ export function mergeMusicians(
         address,
         band,
       } = from;
+      member.sensitiveRef ??= from.sensitiveRef;
       member.payout ??= { registration, account, iban, phone, payee, cvr };
       member.performer ??= { name, email, address, phone, band, cvr, payee };
       member.musicianId = into.id;
@@ -506,10 +578,21 @@ export function mergeMusicians(
   into.updatedAt = from.deletedAt;
   return null;
 }
+export function publicMusician(musician: Musician) {
+  const {
+    cpr,
+    registration,
+    account,
+    iban,
+    mobilePayNumber,
+    sensitiveRef,
+    ...profile
+  } = musician;
+  return profile;
+}
+
 export function clientWorkspace(state: Workspace) {
-  const publicMusicians = state.musicians.map(
-    ({ cpr, registration, account, iban, ...musician }) => musician,
-  );
+  const publicMusicians = state.musicians.map(publicMusician);
   return {
     revision: state.revision,
     venue: state.venue,

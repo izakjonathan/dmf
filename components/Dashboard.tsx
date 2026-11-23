@@ -27,6 +27,7 @@ import Bookings from "./Bookings";
 import BookingReview from "./BookingReview";
 import { ViewportTheme } from "./ViewportTheme";
 import { BankFields } from "./BankFields";
+import { RevealSensitive, type SensitiveDetails } from "./RevealSensitive";
 import { ContractReceipt, PaymentContractFields } from "./Contract";
 
 const emailChecks: Record<string, string> = {
@@ -48,6 +49,8 @@ const deliveryMessages: Record<string, string> = {
     "The Google account has reached its daily email limit. Copy the signing link to share it now.",
   MAIL_ADDRESS:
     "Google rejected the recipient address. Copy the signing link and verify the recipient before sharing.",
+  MAIL_ATTACHMENT:
+    "The DMF template could not be attached. Check that the current Vercel build is live, then retry.",
   MAIL_INACTIVE: "This signing request is no longer active.",
   MAIL_UNCERTAIN:
     "Google didn’t confirm whether this email was sent. Copy the signing link to share it manually.",
@@ -64,7 +67,12 @@ type Page =
 type Modal =
   | { kind: "payment" }
   | { kind: "contract"; contract: SignedContract }
-  | { kind: "musician"; profile: Musician; collectCpr: boolean }
+  | {
+      kind: "musician";
+      profile: Omit<Musician, "cpr" | "account" | "registration">;
+      masked?: SensitiveDetails;
+      collectCpr: boolean;
+    }
   | { kind: "void"; payment: Payment };
 const pages: Page[] = ["Bookings", "Payments", "Contracts"];
 const adminPages: Page[] = ["Overview", "Musicians", "Reports", "Venue"];
@@ -270,6 +278,7 @@ export default function Dashboard() {
       setModal({
         kind: "musician",
         profile: result.profile,
+        masked: result.masked,
         collectCpr: result.collectCpr,
       });
     } catch (e) {
@@ -918,6 +927,7 @@ export default function Dashboard() {
               <>
                 <MusicianEditor
                   profile={modal.profile}
+                  masked={modal.masked}
                   collectCpr={modal.collectCpr}
                   busy={busy}
                   remove={() =>
@@ -1298,13 +1308,15 @@ function PaymentForm({
 
 function MusicianEditor({
   profile,
+  masked,
   collectCpr,
   busy,
   save,
   remove,
   restore,
 }: {
-  profile: Musician;
+  profile: Omit<Musician, "cpr" | "account" | "registration">;
+  masked?: SensitiveDetails;
   collectCpr: boolean;
   busy: boolean;
   save: (profile: object) => void;
@@ -1395,7 +1407,7 @@ function MusicianEditor({
           <Field label="CPR (optional)">
             <input
               name="cpr"
-              defaultValue={profile.cpr}
+              placeholder={masked?.cpr}
               inputMode="numeric"
               pattern="[0-9]{6}-?[0-9]{4}"
               autoComplete="off"
@@ -1416,7 +1428,24 @@ function MusicianEditor({
           <option>Mobilepay</option>
         </select>
       </Field>
-      {paymentMethod === "Bank transfer" && <BankFields profile={profile} />}
+      {paymentMethod === "Mobilepay" && (
+        <Field label="MobilePay number">
+          <input
+            name="mobilePayNumber"
+            type="tel"
+            autoComplete="off"
+            placeholder={masked?.mobilePayNumber}
+            required={!masked?.mobilePayNumber}
+          />
+        </Field>
+      )}
+      {paymentMethod === "Bank transfer" && <BankFields masked={masked} />}
+      {masked && Object.values(masked).some(Boolean) && (
+        <RevealSensitive
+          target={{ musicianId: profile.id }}
+          keys={["cpr", "registration", "account", "iban", "mobilePayNumber"]}
+        />
+      )}
       <button disabled={busy}>{busy ? "Saving…" : "Save musician"}</button>
       <div className="booking-form">
         {confirmDelete ? (

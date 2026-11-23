@@ -3,8 +3,10 @@ import type { PrivacyAcknowledgement } from "./privacy.ts";
 import { deriveBookingStage } from "./booking-stage.ts";
 import {
   artistPerformanceSchema,
+  contractPerformance,
   date,
   dmfTemplate,
+  dmfConditionsVersion,
   money,
   paymentRecord,
   hasOtherPaymentPath,
@@ -22,12 +24,21 @@ export type BookingMember = {
   email: string;
   name: string;
   privacyAcknowledgement?: PrivacyAcknowledgement;
+  sensitiveRef?: string;
   contractId?: string;
   paymentType?: "Cash" | "Bank transfer" | "Mobilepay";
   performer?: Invite["performer"];
-  payout?: Pick<
-    Musician,
-    "registration" | "account" | "iban" | "phone" | "payee" | "cvr"
+  payout?: Partial<
+    Pick<
+      Musician,
+      | "registration"
+      | "account"
+      | "iban"
+      | "phone"
+      | "payee"
+      | "cvr"
+      | "mobilePayNumber"
+    >
   >;
   attendance?: "played" | "absent" | "issue";
   paymentId?: string;
@@ -93,7 +104,8 @@ export type BookingMail = {
     | "contract"
     | "reminder"
     | "approval"
-    | "receipt";
+    | "receipt"
+    | "tariff";
   status: "pending" | "sent" | "failed" | "uncertain" | "superseded";
   createdAt: string;
   sentAt?: string;
@@ -105,6 +117,7 @@ export type BookingVerification = {
   email: string;
   hash: string;
   expiresAt: string;
+  usedAt?: string;
 };
 export function activeBooking(state: Workspace, id: string) {
   const booking = state.bookings?.find((item) => item.id === id);
@@ -116,6 +129,16 @@ export function contactBookingId(
   booking: Pick<Booking, "id" | "sourceVersion">,
 ) {
   return "contact:" + booking.id + ":" + (booking.sourceVersion || 1);
+}
+export function bookingRegistrationExpired(
+  booking: Pick<Booking, "date">,
+  now = today(),
+) {
+  const cutoff = new Date(booking.date + "T12:00:00Z");
+  cutoff.setUTCDate(cutoff.getUTCDate() + 1);
+  return (
+    Number.isNaN(cutoff.getTime()) || now > cutoff.toISOString().slice(0, 10)
+  );
 }
 export function signingDeadline(performanceDate: string) {
   if (performanceDate > today()) return performanceDate;
@@ -248,8 +271,7 @@ export function issueBookingContracts(
         payee,
       },
       offer: {
-        ...performance,
-        getIn: "",
+        ...contractPerformance(performance),
         specialTerms: "",
         artistPerformance: false,
         organizer: {
@@ -271,6 +293,7 @@ export function issueBookingContracts(
         organizerSigner,
         organizerSignedAt: organizerSigner ? at : undefined,
         template: dmfTemplate,
+        conditionsVersion: dmfConditionsVersion,
       },
     };
     member.contractId = inviteId;
@@ -348,7 +371,11 @@ export function reissueBookingContract(
     revoked: false,
     expiresAt: returnBy + "T23:59:59.999Z",
     emailSentAt: undefined,
-    offer: { ...previous.offer, returnBy },
+    offer: {
+      ...previous.offer,
+      returnBy,
+      conditionsVersion: dmfConditionsVersion,
+    },
   });
   member.contractId = id;
   state.bookingMail ??= [];
@@ -600,7 +627,12 @@ export function bookingOverview(state: Workspace) {
     contractStatus: bookingContractStatus(state, booking),
     workflow: bookingStage(state, booking),
     members: booking.members.map(
-      ({ payout: _payout, performer: _performer, ...member }) => {
+      ({
+        payout: _payout,
+        performer: _performer,
+        sensitiveRef: _sensitiveRef,
+        ...member
+      }) => {
         const payment = state.payments.find(
           (p) => p.id === member.paymentId && !p.voidReason,
         );

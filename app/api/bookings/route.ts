@@ -32,7 +32,12 @@ import {
   resolveBookingException,
   paidSchema,
 } from "@/lib/bookings";
-import { date, today, type Workspace } from "@/lib/model";
+import {
+  artistPerformanceSubmissionSchema,
+  date,
+  today,
+  type Workspace,
+} from "@/lib/model";
 export const maxDuration = 60;
 function response(state: Awaited<ReturnType<typeof readState>>) {
   return {
@@ -60,35 +65,64 @@ function nightAccess(state: Workspace, req: Request) {
     );
   return { day, name: access.name };
 }
-function nightResponse(
-  state: Workspace,
-  access: { day: string; name: string },
+function nightText(
+  booking: NonNullable<Workspace["bookings"]>[number],
+  text: string,
 ) {
+  const names = [
+    booking.contactName,
+    ...booking.members.map((member) => member.name),
+  ];
+  const withoutNames = names.reduce<string>(
+    (result, name) =>
+      name && name.trim().length > 1
+        ? result.replaceAll(
+            new RegExp(name.replace(/[.*+?^$${}()|[\]\\]/g, "\\$&"), "gi"),
+            "[removed]",
+          )
+        : result,
+    text,
+  );
+  return withoutNames.replace(
+    /https?:\/\/\S+|[\w.+-]+@[\w.-]+\.[a-z]{2,}|\+?\d(?:[ ().-]*\d){7,}/gi,
+    "[removed]",
+  );
+}
+
+function nightResponse(state: Workspace, access: { day: string }) {
   return {
-    staff: access,
+    day: access.day,
     bookings: (state.bookings || [])
-      .filter((b) => b.date === access.day)
+      .filter(
+        (b) => b.date === access.day && !b.cancelled && !b.retentionArchived,
+      )
       .map((b) => ({
         id: b.id,
-        date: b.date,
         act: b.act,
-        expectedMembers: b.expectedMembers,
-        performance: b.performance,
-        cancelled: b.cancelled,
-        sourceError: b.sourceError ? "Check with the manager." : undefined,
-        confirmedAt: b.confirmedAt,
-        confirmedBy: b.confirmedBy,
-        attendanceNote: b.attendanceNote,
-        attendanceLocked:
-          b.members.length > 0 && b.members.every((m) => m.paymentId),
-        workflowStatus: bookingStage(state, b).label,
-        members: b.members.map((m) => ({
-          id: m.id,
-          name: m.name,
-          attendance: m.attendance,
-          attendanceLocked: Boolean(m.paymentId),
-        })),
-      })),
+        musicianCount: b.expectedMembers,
+        genre: nightText(b, b.performance?.genre || ""),
+        start: b.performance?.start || "",
+        end: b.performance?.end || "",
+        sets: b.performance?.sets ?? null,
+        minutesPerSet: b.performance?.minutesPerSet ?? null,
+        getIn: b.performance?.getIn || "",
+        soundcheck: b.performance?.soundcheck ?? null,
+        requests: nightText(b, b.performance?.requests || ""),
+        notes: b.sourceError
+          ? "Ask the venue to check this booking."
+          : nightText(b, b.performance?.technicalNotes || ""),
+        soundcheckTime: b.performance?.soundcheckTime || "",
+        attendance: b.sourceError
+          ? "unavailable"
+          : !b.confirmedAt
+            ? "pending"
+            : !b.attendanceNote &&
+                b.members.length === b.expectedMembers &&
+                b.members.every((m) => m.attendance === "played")
+              ? "performed"
+              : "deviation",
+      }))
+      .sort((a, b) => (a.start || "99:99").localeCompare(b.start || "99:99")),
   };
 }
 export async function GET(req: Request) {
@@ -101,21 +135,26 @@ export async function GET(req: Request) {
     if (bookingId) {
       const booking = state.bookings?.find((b) => b.id === bookingId);
       if (!booking) throw Error("Booking not found.");
-      await sheets("auditView", { viewer: "admin", bookingId });
+      const { records } = booking.members.length
+        ? await sheets("sensitiveView", { bookingId })
+        : { records: [] };
       return json({
         accounts: booking.members.map((member) => {
           const musician = state.musicians.find(
             (m) => m.id === member.musicianId,
           );
           const payout = member.payout || musician;
+          const masked = records.find(
+            (entry: { id: string }) => entry.id === member.id,
+          );
           return {
             memberId: member.id,
             name: member.name,
             email: member.email,
-            registration: payout?.registration,
-            account: payout?.account,
-            iban: payout?.iban,
-            phone: payout?.phone,
+            registration: masked?.registration,
+            account: masked?.account,
+            iban: masked?.iban,
+            mobilePayNumber: masked?.mobilePayNumber,
             payee: payout?.payee,
             cvr: payout?.cvr,
           };
@@ -139,12 +178,14 @@ const actionSchema = z.object({
     "attendanceDate",
     "paid",
     "link",
+    "contactLink",
     "signingLink",
     "receiptLink",
     "retry",
     "resendInvitation",
     "reissue",
     "correctBooking",
+    "technicalSchedule",
     "staffLink",
     "revokeStaff",
   ]),
@@ -166,14 +207,48 @@ export async function POST(req: Request) {
         (b) => b.id === input.id && b.date === access.day,
       );
       if (!booking) throw new RequestError("Choose an act on this date.", 404);
+      if (booking.date > today())
+        throw new RequestError(
+          "Attendance opens on the performance date.",
+          409,
+        );
+      if (booking.confirmedAt)
+        throw new RequestError(
+          "Attendance is already recorded. Ask the venue to make any changes.",
+          409,
+        );
+      if (booking.sourceError)
+        throw new RequestError("Ask the venue to check this booking.", 409);
+      const fact = z
+        .discriminatedUnion("result", [
+          z.object({ result: z.literal("performed") }).strict(),
+          z
+            .object({
+              result: z.literal("deviation"),
+              note: z
+                .string()
+                .trim()
+                .min(1, "Describe what differed.")
+                .max(2000),
+            })
+            .strict(),
+        ])
+        .parse(input.data);
+      if (
+        fact.result === "performed" &&
+        booking.members.length !== booking.expectedMembers
+      )
+        throw new RequestError(
+          "The lineup is incomplete. Use Something differed so the venue can check it.",
+          409,
+        );
       confirmBooking(state, booking.id, {
-        ...z
-          .object({
-            note: z.string().optional(),
-            members: z.array(z.unknown()),
-          })
-          .parse(input.data),
         by: access.name,
+        note: fact.result === "deviation" ? fact.note : "",
+        members: booking.members.map((m) => ({
+          id: m.id,
+          status: fact.result === "performed" ? "played" : "issue",
+        })),
       });
       const saved = await writeState(state, {
         actor: "staff",
@@ -258,12 +333,20 @@ export async function POST(req: Request) {
         link: "/night/" + value.day + "." + bookingToken("night:" + id),
       });
     }
-    if (input.action === "link") {
+    if (input.action === "link" || input.action === "contactLink") {
       const booking = state.bookings?.find(
         (b) => b.id === input.id && !b.cancelled,
       );
       if (!booking) throw Error("Booking not found.");
-      return json({ link: "/b/" + bookingToken(booking.id) });
+      return json({
+        link:
+          "/b/" +
+          bookingToken(
+            input.action === "contactLink"
+              ? contactBookingId(booking)
+              : booking.id,
+          ),
+      });
     }
     if (input.action === "receiptLink") {
       const { mailId } = z.object({ mailId: z.string() }).parse(input.data);
@@ -345,6 +428,32 @@ export async function POST(req: Request) {
       if (!input.id) throw Error("Choose a booking.");
       approveBooking(state, input.id, input.data, bookingSigningCredentials);
     }
+    const rowChecks = new Set<string>();
+    if (input.action === "technicalSchedule") {
+      const booking = activeBooking(state, input.id || "");
+      if (
+        !booking.performance ||
+        bookingRegistrationClosed(booking) ||
+        booking.sourceError
+      )
+        throw new RequestError(
+          "Reopen contract terms before changing the schedule.",
+          409,
+        );
+      const overrides = z
+        .object({
+          getIn: z.string(),
+          soundcheck: z.enum(["Yes", "No"]),
+          soundcheckTime: z.string(),
+          technicalNotes: z.string().trim().max(1000),
+        })
+        .parse(input.data);
+      booking.performance = artistPerformanceSubmissionSchema.parse({
+        ...booking.performance,
+        ...overrides,
+      });
+      if (booking.artistFirst) rowChecks.add(booking.id);
+    }
     if (input.action === "correctBooking") {
       if (!input.id) throw new RequestError("Choose a booking.");
       reopenBooking(state, input.id, input.data);
@@ -362,7 +471,6 @@ export async function POST(req: Request) {
         bookingSigningCredentials,
       );
     }
-    const rowChecks = new Set<string>();
     if (input.action === "resolveException") {
       if (!input.id) throw new RequestError("Choose a booking.");
       resolveBookingException(state, input.id, input.data);

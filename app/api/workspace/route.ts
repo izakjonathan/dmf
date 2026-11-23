@@ -19,8 +19,10 @@ import {
 } from "@/lib/server";
 import {
   clientWorkspace,
+  publicMusician,
   paymentContractSchema,
   dmfTemplate,
+  dmfConditionsVersion,
   musicianEditSchema,
   musicianStatusSchema,
   setMusicianDeleted,
@@ -62,8 +64,12 @@ export async function GET(req: Request) {
     if (musicianId !== null) {
       const profile = state.musicians.find(({ id }) => id === musicianId);
       if (!profile) throw new RequestError("Musician not found.", 404);
-      await sheets("auditView", { viewer: "admin", musicianId });
-      return json({ profile, collectCpr: state.venue.collectCpr });
+      const masked = (await sheets("sensitiveView", { musicianId })).records[0];
+      return json({
+        profile: publicMusician(profile),
+        masked,
+        collectCpr: state.venue.collectCpr,
+      });
     }
     return json({
       ...workspaceResponse(state),
@@ -263,6 +269,7 @@ export async function POST(req: Request) {
               organizer: { name, legalName, address, cvr, email, phone },
               organizerSignedAt: signedAt,
               template: dmfTemplate,
+              conditionsVersion: dmfConditionsVersion,
             },
           };
         });

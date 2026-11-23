@@ -12,6 +12,7 @@ import {
   type SignedContract,
 } from "@/lib/model";
 import { BankFields } from "./BankFields";
+import type { SensitiveDetails } from "./RevealSensitive";
 import {
   ArtistPerformanceFields,
   ContractReceipt,
@@ -28,6 +29,7 @@ type Details = {
     collectCpr: boolean;
   };
   profile: Partial<Musician> | null;
+  masked?: SensitiveDetails;
   offer: Omit<ContractOffer, "performerEmail"> | null;
   signingOnly?: boolean;
   performerName?: string;
@@ -306,6 +308,7 @@ export default function Registration({ token }: { token: string }) {
                       CPR (optional)
                       <input
                         name="cpr"
+                        placeholder={details.masked?.cpr}
                         inputMode="numeric"
                         pattern="[0-9]{6}-?[0-9]{4}"
                         autoComplete="off"
@@ -313,7 +316,7 @@ export default function Registration({ token }: { token: string }) {
                     </label>
                   )
                 )}
-                <BankFields />
+                <BankFields masked={details.masked} />
                 <PrivacyNotice venue={details.venue} kind="musician" />
               </>
             )}
@@ -349,14 +352,6 @@ export default function Registration({ token }: { token: string }) {
                     : "I have read the DMF standard contract and agree to the performance terms above."}
                 </label>
               </section>
-            )}
-            {!details.signingOnly && (
-              <p className="fine">
-                {details.venue.legalName} uses these details to administer
-                payments and accounting. Details go to its restricted Google
-                Sheet. For corrections or questions, contact{" "}
-                {details.venue.email}.
-              </p>
             )}
             <button disabled={busy}>
               {busy

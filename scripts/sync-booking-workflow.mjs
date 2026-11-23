@@ -12,7 +12,13 @@ const payments = bookings.slice(
   bookings.indexOf("export function pendingReason("),
   bookings.indexOf("export const approvalSchema"),
 );
+const model = source("../lib/model.ts");
+const tariffs = model.slice(
+  model.indexOf("export function tariff("),
+  model.indexOf("export function hasOtherPaymentPath("),
+);
 const shared =
+  tariffs +
   source("../lib/booking-stage.ts") +
   payments +
   stage.replaceAll("isCurrentBookingMail", "currentBookingMail");

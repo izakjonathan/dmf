@@ -135,7 +135,15 @@ export default function BookingReview({ id }: { id: string }) {
             {review.performance.start}–{review.performance.end} ·{" "}
             {review.performance.sets} × {review.performance.minutesPerSet} min ·
             Soundcheck {review.performance.soundcheck}
+            {review.performance.soundcheckTime &&
+              " · " + review.performance.soundcheckTime}
           </p>
+          {review.performance.genre && (
+            <p>Genre · {review.performance.genre}</p>
+          )}
+          {review.performance.getIn && (
+            <p>Get-in · {review.performance.getIn}</p>
+          )}
           {review.performance.requests && (
             <p>Requests · {review.performance.requests}</p>
           )}

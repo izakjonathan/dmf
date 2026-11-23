@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import {
   clientWorkspace,
@@ -648,4 +649,127 @@ test("musician deletion rejects stale edits and excludes deleted members from ne
       }),
     /membership changed/,
   );
+});
+
+test("technical schedule validates same-day get-in and conditional soundcheck time", async () => {
+  const { artistPerformanceSubmissionSchema, contractPerformance } =
+    await import("../lib/model.ts");
+  const schedule = {
+    start: "21:00",
+    end: "00:00",
+    sets: 2,
+    minutesPerSet: 40,
+    soundcheck: "Yes",
+    soundcheckTime: "20:30",
+    getIn: "19:30",
+    genre: "Folk",
+  };
+  assert.equal(
+    artistPerformanceSubmissionSchema.safeParse({ ...schedule, getIn: "21:00" })
+      .success,
+    false,
+  );
+  assert.equal(
+    artistPerformanceSubmissionSchema.safeParse({
+      ...schedule,
+      soundcheckTime: "",
+    }).success,
+    false,
+  );
+  assert.equal(
+    artistPerformanceSubmissionSchema.safeParse({
+      ...schedule,
+      soundcheck: "No",
+    }).success,
+    false,
+  );
+  assert.equal(
+    artistPerformanceSubmissionSchema.safeParse({
+      ...schedule,
+      genre: "a".repeat(301),
+    }).success,
+    false,
+  );
+  const saved = contractPerformance(
+    artistPerformanceSubmissionSchema.parse(schedule),
+  );
+  assert.equal(saved.getIn, "19:30");
+  assert.equal(saved.soundcheck, "20:30");
+  assert.equal(saved.genre, "Folk");
+});
+
+test("original Danish contract attachment checks the exact PDF digest and refuses a changed file", () => {
+  const script = readFileSync(
+    new URL("../public/Code.gs", import.meta.url),
+    "utf8",
+  );
+  const content = readFileSync(
+    new URL("../public/legal/DMF_Standardkontrakt.pdf", import.meta.url),
+  );
+  let requested = "";
+  const attachment = {
+    getBytes: () => content,
+    setContentType: (type: string) => {
+      assert.equal(type, "application/pdf");
+      return attachment;
+    },
+    setName: (name: string) => {
+      assert.equal(name, "DMF_Standardkontrakt.pdf");
+      return attachment;
+    },
+  };
+  const fetch = (url: string) => {
+    requested = url;
+    return { getResponseCode: () => 200, getBlob: () => attachment };
+  };
+  const context = {
+    UrlFetchApp: { fetch },
+    Utilities: {
+      DigestAlgorithm: { SHA_256: "SHA_256" },
+      computeDigest: () =>
+        Array.from(createHash("sha256").update(content).digest()),
+    },
+  };
+  assert.equal(
+    runInNewContext(script + "\noriginalDmfAttachment()", context),
+    attachment,
+  );
+  assert.match(requested, /\/legal\/DMF_Standardkontrakt\.pdf$/);
+  assert.throws(
+    () =>
+      runInNewContext(script + "\noriginalDmfAttachment()", {
+        ...context,
+        Utilities: { ...context.Utilities, computeDigest: () => [0] },
+      }),
+    /could not be verified/,
+  );
+});
+
+test("booking tariff warning is non-blocking and matches Apps Script on all rate boundaries", async () => {
+  const { tariffWarning } = await import("../lib/model.ts");
+  const script = readFileSync(
+    new URL("../public/Code.gs", import.meta.url),
+    "utf8",
+  );
+  for (const [date, fee, expected] of [
+    ["2026-03-31", 300000, ""],
+    [
+      "2026-04-01",
+      300000,
+      "This fee is below DMF's minimum tariff of 3,150 kr per musician.",
+    ],
+    ["2027-03-31", 315000, ""],
+    [
+      "2027-04-01",
+      315000,
+      "This fee is below DMF's minimum tariff of 3,200 kr per musician.",
+    ],
+    ["2027-04-01", 320000, ""],
+  ] as const) {
+    assert.equal(tariffWarning(date, fee), expected);
+    assert.equal(
+      runInNewContext(script + "\ntariffWarning(date,fee)", { date, fee }),
+      expected,
+    );
+  }
 });

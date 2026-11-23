@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { acknowledgePrivacy, privacyNoticeVersion } from "../lib/privacy.ts";
 
@@ -172,5 +173,64 @@ test("audit rows contain event labels and IDs, not copied personal details", () 
   assert.equal(
     (rows as string[][]).find((row) => row[1] === "Attendance recorded")?.[2],
     "staff",
+  );
+});
+
+test("sensitive migration externalises profile and booking payout, supports masked and audited views", () => {
+  const state = record();
+  Object.assign(state.musicians[0], { preferredPaymentType: "Mobilepay" });
+  const privateRows: string[][] = [];
+  let auditWrites = 0;
+  const props = {
+    getProperty: (key: string) => (key === "SENSITIVE_MIGRATED" ? "true" : ""),
+  };
+  const result = runInNewContext(
+    script +
+      `
+    const storage = {book:{getId:()=>"private"},sheet:{getSheetId:()=>1}};
+    sensitiveStorage = () => storage;
+    sensitiveRows = () => privateRows;
+    bookingHmac = message => hash(message);
+    auditAppend = () => ({audit:true});
+    persistSensitive(state,props,true);
+    const privateCount = privateRows.length;
+    persistSensitive(state,props,true);
+    const masked = sensitiveView(main,state,{musicianId:state.musicians[0].id},props).records[0];
+    const full = sensitiveView(main,state,{musicianId:state.musicians[0].id,mode:"reveal"},props).records[0];
+    ({ masked, full, privateCount, project: rowsFor({...state,venue:{},bookings:[],contracts:[],bookingMail:[],payments:[]}) });
+  `,
+    {
+      state,
+      props,
+      privateRows,
+      main: { getId: () => "main" },
+      hash: (s: string) => createHash("sha256").update(s).digest("hex"),
+      Sheets: {
+        Spreadsheets: {
+          batchUpdate({ requests }: any, id: string) {
+            if (id === "main") {
+              auditWrites++;
+              return;
+            }
+            for (const req of requests)
+              privateRows.push(
+                ...req.appendCells.rows.map((row: any) =>
+                  row.values.map((v: any) => v.userEnteredValue.stringValue),
+                ),
+              );
+          },
+        },
+      },
+    },
+  );
+  assert.equal(privateRows.length, result.privateCount);
+  assert.ok(privateRows.length >= 1);
+  assert.equal(result.masked.account, "••••3210");
+  assert.equal(result.masked.cpr, "••••0000");
+  assert.equal(result.full.mobilePayNumber, "87654321");
+  assert.equal(auditWrites, 1);
+  assert.doesNotMatch(
+    JSON.stringify({ state, projection: result.project }),
+    /9876543210|0101010000|DK000000|87654321/,
   );
 });

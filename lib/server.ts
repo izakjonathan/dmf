@@ -213,8 +213,12 @@ export async function writeState(
   } = {},
 ) {
   const next = { ...state, revision: state.revision + 1 };
-  await sheets("write", { state: next, expected: state.revision, ...options });
-  return next;
+  const saved = await sheets("write", {
+    state: next,
+    expected: state.revision,
+    ...options,
+  });
+  return (saved.state as Workspace | undefined) ?? next;
 }
 const cookieName = "stagebook_session";
 export async function admin() {

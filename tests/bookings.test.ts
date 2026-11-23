@@ -689,7 +689,7 @@ function operationsFixture(
       height?: number,
       width?: number,
     ) => ({
-      getValue: () => (r === "A1" ? "Dato" : row[(col || 1) - 1]),
+      getValue: (): unknown => (r === "A1" ? "Dato" : row[(col || 1) - 1]),
       getValues: () =>
         typeof r === "number" && col === 23 ? [[row[22]]] : rows,
       setValue: (value: unknown) => {
@@ -1074,4 +1074,81 @@ test("an absent performer cannot block a signed colleague or receive their payme
     sandbox,
   );
   assert.deepEqual(JSON.parse(sandbox.result), stage);
+});
+
+test("production booking intake rejects new bookings on legacy layouts", () => {
+  const state = demoWorkspace();
+  const f = sheetFixture([
+    [today(), "New band", "act@example.test", 2, 3150, "Cash", "", "No", ""],
+  ]);
+  runInNewContext(script + "\nsyncBookingRows(book,state,props,true)", {
+    state,
+    ...f,
+  });
+  assert.equal(state.bookings?.length ?? 0, 0);
+  assert.match(String(f.outputs.get("2:14")), /Upgrade the Bookings tab/);
+});
+
+test("both new booking entry points share the musician-first workflow", () => {
+  const makeFixture = () => {
+    const state = demoWorkspace();
+    const row: unknown[] = Array(43).fill("");
+    const f = operationsFixture(state, row);
+    const readRange = f.book.getSheetByName().getRange;
+    Object.assign(f.book.getSheetByName(), {
+      getMaxColumns: () => 43,
+      getMaxRows: () => 1000,
+      getLastRow: () => (row[0] ? 2 : 1),
+      getRange: (r: number | string, col?: number, n?: number, w?: number) =>
+        r === "AD1"
+          ? { getValue: (): string => "Contact name" }
+          : { ...readRange(r, col, n, w), setNumberFormat() {} },
+    });
+    return f;
+  };
+  for (const fromApp of [true, false]) {
+    const f = makeFixture();
+    const input = {
+      requestId: crypto.randomUUID(),
+      date: today(),
+      act: "New band",
+      ticketPrice: 5000,
+      contactEmail: "act@example.test",
+      booker: "Staff",
+      fee: 315000,
+      contactName: "Band contact",
+    };
+    if (!fromApp) {
+      for (const [index, value] of [
+        [0, input.date],
+        [2, input.act],
+        [3, 50],
+        [9, input.contactEmail],
+        [11, input.booker],
+        [18, 3150],
+        [29, input.contactName],
+      ] as const)
+        f.row[index] = value;
+    }
+    runInNewContext(
+      script +
+        `
+      const append = appendStagebookBooking;
+      appendStagebookBooking = (book,sheet,data) => {
+        sheetValue = () => ({numberValue:data.date});
+        append(book,sheet,data);
+      };
+      if (fromApp) appendStagebookBooking(book,book.getSheetByName(),input);
+      syncBookingRows(book,state,props,true);
+    `,
+      {
+        ...f,
+        input,
+        fromApp,
+        PropertiesService: { getScriptProperties: () => f.props },
+      },
+    );
+    assert.equal(f.state.bookings?.[0].artistFirst, true);
+    assert.equal(f.state.bookings?.[0].contactName, input.contactName);
+  }
 });

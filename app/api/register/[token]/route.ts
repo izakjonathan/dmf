@@ -2,6 +2,7 @@ import { acknowledgePrivacy } from "@/lib/privacy";
 import {
   fail,
   bookingToken,
+  dispatchBookingMail,
   bookingReceiptUrl,
   equals,
   findInvite,
@@ -14,7 +15,10 @@ import {
 } from "@/lib/server";
 import {
   artistPerformanceSchema,
+  contractPerformance,
+  dmfConditionsVersion,
   musicianSchema,
+  musicianProfileSchema,
   performerSignatureSchema,
   today,
   type Invite,
@@ -49,7 +53,9 @@ export async function GET(_req: Request, context: Context) {
         state.contracts?.find(
           (item) =>
             !item.retentionArchived &&
-            item.bookingId &&
+            (item.bookingId ||
+              (item.paymentId &&
+                item.offer.conditionsVersion === dmfConditionsVersion)) &&
             item.offer.organizerSignedAt &&
             Date.parse(item.offer.organizerSignedAt) + 365 * 86400000 >
               Date.now() &&
@@ -97,6 +103,9 @@ export async function GET(_req: Request, context: Context) {
       performance: invite.offer?.artistPerformance
         ? state.musicians.find((item) => item.id === invite.musicianId)
             ?.performance
+        : undefined,
+      masked: profile
+        ? (await sheets("sensitiveView", { musicianId: profile.id })).records[0]
         : undefined,
       profile: profile
         ? {
@@ -163,7 +172,10 @@ export async function POST(req: Request, context: Context) {
         bookingVersion: invite.bookingVersion,
         memberId: invite.memberId,
         musicianId: invite.musicianId,
-        offer: { ...offer, ...performance },
+        offer: {
+          ...offer,
+          ...(performance ? contractPerformance(performance) : {}),
+        },
         performer: invite.performer,
         performerSigner: signature.name,
         performerSignedAt: new Date().toISOString(),
@@ -172,10 +184,15 @@ export async function POST(req: Request, context: Context) {
       state.contracts.push(contract);
       if (performance) invite.offer = contract.offer;
       invite.signedAt = contract.performerSignedAt;
-      if (invite.bookingId && contract.offer.organizerSignedAt)
+      const receiptSource =
+        invite.bookingId ||
+        (contract.offer.conditionsVersion === dmfConditionsVersion
+          ? invite.paymentId
+          : undefined);
+      if (receiptSource && contract.offer.organizerSignedAt)
         bookingReceipt(
           state,
-          invite.bookingId,
+          receiptSource,
           contract,
           bookingReceiptUrl(contract.id),
         );
@@ -186,28 +203,35 @@ export async function POST(req: Request, context: Context) {
         state,
         booking?.artistFirst ? { sheetBookingId: booking.id } : undefined,
       );
+      if (receiptSource && !invite.bookingId) {
+        try {
+          await dispatchBookingMail();
+        } catch {
+          /* The saved outbox can retry. */
+        }
+      }
       return json({ ok: true, contract });
     }
     const privacyAcknowledgement = acknowledgePrivacy(body.privacyAcknowledged);
-    const input = musicianSchema.parse(body);
+    const candidate = musicianProfileSchema.parse(body);
     const signature = offer
       ? performerSignatureSchema.parse(body.signature)
       : null;
-    if (offer && input.email !== offer.performerEmail)
+    if (offer && candidate.email !== offer.performerEmail)
       throw new RequestError(
         "Use the email address the venue sent this link to.",
         403,
       );
     const index = state.musicians.findIndex((item) =>
       offer
-        ? !item.mergedInto && item.email.toLowerCase() === input.email
+        ? !item.mergedInto && item.email.toLowerCase() === candidate.email
         : item.id === invite.musicianId,
     );
     if (
       state.musicians.some(
         (item, position) =>
           !item.mergedInto &&
-          item.email.toLowerCase() === input.email &&
+          item.email.toLowerCase() === candidate.email &&
           position !== index,
       )
     )
@@ -218,6 +242,12 @@ export async function POST(req: Request, context: Context) {
 
     const at = new Date().toISOString();
     const existing = state.musicians[index];
+    const input =
+      existing?.sensitiveRef &&
+      (existing.preferredPaymentType || "Bank transfer") ===
+        (candidate.preferredPaymentType || "Bank transfer")
+        ? candidate
+        : musicianSchema.parse(body);
     const profile = {
       ...input,
       privacyAcknowledgement,
@@ -236,7 +266,10 @@ export async function POST(req: Request, context: Context) {
       contract = {
         id: invite.id,
         musicianId: profile.id,
-        offer: { ...offer, ...performance },
+        offer: {
+          ...offer,
+          ...(performance ? contractPerformance(performance) : {}),
+        },
         performer: { name, email, address, phone, band, cvr, payee },
         performerSigner: signature.name,
         performerSignedAt: at,

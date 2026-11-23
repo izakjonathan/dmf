@@ -57,8 +57,9 @@ function doPost(event) {
       step = "saving the workbook";
       const previous = readStoredState(book);
       const audit = bookingAuditChanges(previous, request.state, request.actor === "staff");
+      if (props.getProperty("SENSITIVE_MIGRATED")==="true") persistSensitive(request.state,props,false);
       writeWorkbook(book, request.state, audit);
-      return respond({ok:true});
+      return respond({ok:true,state:request.state});
     }
     const length = storage.getLastRow();
     const encoded = length > 1 ? storage.getRange(2,1,length-1,1).getValues().map(row=>row[0]).join("") : "";
@@ -107,8 +108,9 @@ function doPost(event) {
       try { quota = MailApp.getRemainingDailyQuota(); } catch (error) { console.warn("Stagebook mail quota unavailable."); }
       let handlers = [];
       try { handlers = ScriptApp.getProjectTriggers().map(trigger=>trigger.getHandlerFunction()); } catch (error) { console.warn("Stagebook triggers unavailable."); }
-      return respond({ok:true,version:"booking-workflow-3",quota,scheduled:handlers.includes("runBookingAutomation"),onEdit:handlers.includes("bookingSheetEdited")});
+      return respond({ok:true,version:"booking-privacy-2",quota,scheduled:handlers.includes("runBookingAutomation"),onEdit:handlers.includes("bookingSheetEdited")});
     }
+    if (request.action === "sensitiveView" && state?.auth) return respond(sensitiveView(book,state,request,props));
     if (request.action === "auditView" && state?.auth) {
       Sheets.Spreadsheets.batchUpdate({requests:[auditAppend(book,[
         auditRow("Full record viewed", request.viewer, request.bookingId, request.musicianId)
@@ -146,6 +148,7 @@ function emailContracts(book, state, links, props) {
     return {ok:true,state,delivery};
   }
   const recorded = [];
+  let pdf;
   for (const item of links) {
     const invite = state.invites.find(value => value.id === item.id);
     if (!invite?.paymentId || !invite.offer || invite.revoked || invite.signedAt ||
@@ -172,6 +175,11 @@ function emailContracts(book, state, links, props) {
       continue;
     }
     const offer = invite.offer;
+    const attach = offer.conditionsVersion === DMF_CONDITIONS_VERSION;
+    if (attach && !pdf) {
+      try { pdf = originalDmfAttachment(); }
+      catch (_) { failure("MAIL_ATTACHMENT"); continue; }
+    }
     props.setProperty(key, "sending");
     try {
       MailApp.sendEmail({
@@ -179,6 +187,7 @@ function emailContracts(book, state, links, props) {
         replyTo: offer.organizer.email,
         name: offer.organizer.name,
         subject: "DMF contract to sign · " + offer.performanceDate,
+        ...(attach ? {attachments:[pdf]} : {}),
         body: "Please review and sign your DMF contract for " + offer.organizer.name +
           " (performance " + offer.performanceDate + ").\n\n" +
           item.url + "\n\nSigning deadline: " + offer.returnBy +
@@ -203,6 +212,19 @@ function emailContracts(book, state, links, props) {
   }
   return {ok:true,state,delivery};
 }
+const DMF_CONDITIONS_VERSION = "dmf-red-2019-en-1";
+function originalDmfAttachment() {
+  const url = "https://dmf-eta.vercel.app/legal/DMF_Standardkontrakt.pdf";
+  const response = UrlFetchApp.fetch(url,{followRedirects:false,muteHttpExceptions:true});
+  if (response.getResponseCode()!==200) throw Error("DMF PDF unavailable.");
+  const blob = response.getBlob();
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,blob.getBytes())
+    .map(value=>((value+256)%256).toString(16).padStart(2,"0")).join("");
+  if (digest!=="ce401558fa30f68634b5dc7a19e49e22b88a682a4bc96bdae5547a191774a64d")
+    throw Error("DMF PDF could not be verified.");
+  return blob.setContentType("application/pdf").setName("DMF_Standardkontrakt.pdf");
+}
+
 function contractEmailError(error) {
   const message = String(error?.message || error);
   if (/authoriz|permi[st]|access denied|scope/i.test(message)) return "MAIL_PERMISSION";
@@ -771,7 +793,7 @@ function runBookingAutomation() {
 function syncAndQueueBookingMail(book,state,props) {
   const before = JSON.stringify([state.bookings,state.bookingMail]);
   const known = new Set((state.bookings || []).map(booking=>booking.id));
-  syncBookingRows(book,state,props);
+  syncBookingRows(book,state,props,true);
   queueBookingReminders(state,props);
   if (before!==JSON.stringify([state.bookings,state.bookingMail])) {
     const audit = (state.bookings || []).filter(b=>!known.has(b.id))
@@ -796,7 +818,7 @@ function bookingSourceSignature(value,modern) {
   try { const input = JSON.parse(value); delete input.paymentType; if (modern) delete input.expectedMembers; return JSON.stringify(input); }
   catch (error) { return value; }
 }
-function syncBookingRows(book,state,props) {
+function syncBookingRows(book,state,props,requireCurrentLayout = false) {
   const sheet = ensureBookingSheet(book);
   const modern = modernBookingSheet(sheet);
   state.bookings = state.bookings || [];
@@ -838,9 +860,11 @@ function syncBookingRows(book,state,props) {
     }
     if (!["yes","no","true","false","cancelled"].includes(cancelledText)) issue = "Cancelled must be Yes or No.";
     if (id && (!/^[a-f0-9-]{36}$/i.test(id) || occurrences.get(id)>1)) issue = "Duplicate or invalid Booking ID. Keep the original row and clear the copied ID to create another booking.";
+    if (!previous && requireCurrentLayout && !workflow) issue = "Upgrade the Bookings tab before adding new acts.";
     if (id) seen.add(id);
     if (previous?.retentionArchived) return;
     let booking = state.bookings.find(item => item.id === id);
+    const feeChanged = !booking || booking.fee !== Math.round(feeDkk*100);
     if (issue) {
       if (booking) booking.sourceError = issue;
       sheet.getRange(index+2,modern ? 28 : 14).setValue(issue);
@@ -856,7 +880,7 @@ function syncBookingRows(book,state,props) {
     }
     if (!booking) {
       booking = {...input,paymentType:"Bank transfer",id,version:1,members:[],sourceSignature,sourceVersion:1};
-      if (workflow) booking.artistFirst = true;
+      if (workflow || requireCurrentLayout) booking.artistFirst = true;
       state.bookings.push(booking);
     } else if (bookingSourceSignature(booking.sourceSignature,modern) !== sourceSignature) {
       if (booking.members.some(member => member.paymentId)) {
@@ -906,6 +930,9 @@ function syncBookingRows(book,state,props) {
           (booking.artistFirst ? "When registration is complete, each musician will receive a contract to sign." :
             "The venue will approve the agreement and send individual contracts.")+"\n\nQuestions: "+state.venue.email});
     }
+    if (feeChanged) queueBookerTariffWarning(state,booking,props);
+    const warning = tariffWarning(booking.date,booking.fee);
+    if (workflow && typeof sheet.getSheetId === "function") sheet.getRange(index+2,19).setNote(warning);
     const methods = Array.from(new Set(booking.members.map(member => member.paymentType || booking.paymentType)));
     sheet.getRange(index+2,modern ? 20 : 6).setValue(methods.length > 1 ? "Mixed" : methods[0] || "");
     for (const mail of state.bookingMail) if (mail.bookingId===id && mail.status!=="sent" && !currentBookingMail(mail,booking)) mail.status="superseded";
@@ -915,6 +942,7 @@ function syncBookingRows(book,state,props) {
   });
   if (modern) {
     ensureBookingActionColumns(sheet);
+    ensureBookingScheduleColumns(sheet);
     refreshBookingProjection(book,state);
   }
   for (const booking of state.bookings) if (!seen.has(booking.id)) {
@@ -944,6 +972,18 @@ function sheetBookingContractStatus(state,b) {
     return b.performance && b.members.length===b.expectedMembers ? "Ready for company signature" : "Waiting for booking details";
   const signed=b.members.filter(m=>(state.contracts || []).some(c=>c.id===m.contractId && c.bookingVersion===b.version)).length;
   return signed===b.expectedMembers ? "All contracts signed" : "Company signed · "+signed+"/"+b.expectedMembers+" artists signed";
+}
+function queueBookerTariffWarning(state,booking,props) {
+  const to = String(props.getProperty("BOOKER_TARIFF_WARNING_EMAIL") || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) || booking.cancelled || booking.date<today()) return;
+  const warning = tariffWarning(booking.date, booking.fee);
+  if (!warning) return;
+  const id = "tariff:"+booking.id+":"+(booking.sourceVersion || 1);
+  if (state.bookingMail.some(mail=>mail.id===id)) return;
+  state.bookingMail.push({id,bookingId:booking.id,sourceVersion:booking.sourceVersion || 1,
+    to,kind:"tariff",status:"pending",createdAt:new Date().toISOString(),
+    subject:"DMF tariff reminder · "+booking.act+" · "+booking.date,
+    body:warning+"\n\nOpen the booking in Stagebook:\nhttps://dmf-eta.vercel.app/?booking="+booking.id});
 }
 function bookingContactUrl(booking,props) {
   return "https://dmf-eta.vercel.app/b/"+bookingHmac("stagebook-booking:contact:"+booking.id+":"+(booking.sourceVersion || 1),props);
@@ -983,6 +1023,7 @@ function processBookingMail(book,state,props) {
   const before = JSON.stringify(state.bookingMail);
   const delivery = {sent:0,failed:0};
   const completed = [];
+  let pdf;
   let quota;
   try { quota = MailApp.getRemainingDailyQuota(); }
   catch (error) { quota = 0; }
@@ -993,10 +1034,10 @@ function processBookingMail(book,state,props) {
     // Let a sheet row settle before sending its first invitation while it is being entered.
     if (mail.kind==="invitation" && Date.now()-Date.parse(mail.createdAt)<60000) continue;
     const booking = (state.bookings || []).find(b=>b.id===mail.bookingId);
-    if (!booking || (mail.kind!=="receipt" && (booking.cancelled || booking.sourceError))) { mail.status="failed"; mail.error="Booking is cancelled or needs attention."; delivery.failed++; continue; }
-    if (mail.sourceVersion && mail.sourceVersion !== (booking.sourceVersion || 1)) { mail.status="superseded"; mail.error="Booking changed. Use its current invitation."; continue; }
+    if (mail.kind!=="receipt" && (!booking || booking.cancelled || booking.sourceError)) { mail.status="failed"; mail.error="Booking is cancelled or needs attention."; delivery.failed++; continue; }
+    if (mail.sourceVersion && mail.sourceVersion !== (booking?.sourceVersion || 1)) { mail.status="superseded"; mail.error="Booking changed. Use its current invitation."; continue; }
     const day = Utilities.formatDate(new Date(),"Europe/Copenhagen","yyyy-MM-dd");
-    if (["contract","approval","invitation","reminder"].includes(mail.kind) && booking.sourceSignature &&
+    if (["contract","approval","invitation","reminder","tariff"].includes(mail.kind) && booking.sourceSignature &&
         !sheetBookingMatches(book,state,booking.id)) {
       mail.error="Waiting for the current booking row to sync.";
       delivery.failed++;
@@ -1019,7 +1060,10 @@ function processBookingMail(book,state,props) {
       const invite = state.invites.find(i=>i.id===mail.id.slice(9));
       if (!invite || invite.revoked || invite.signedAt || invite.bookingVersion!==booking.version || (invite.offer && invite.offer.returnBy < day)) { mail.status="superseded"; mail.error="Agreement is no longer awaiting signature."; continue; }
     }
-    if (mail.kind==="receipt" && !state.contracts?.some(c=>c.id===mail.id.slice(8) && c.offer.organizerSignedAt && c.offer.performerEmail===mail.to)) {
+    const contractForReceipt = mail.kind==="receipt" && state.contracts?.find(c=>
+      c.id===mail.id.slice(8) && !c.retentionArchived && c.offer.organizerSignedAt &&
+      c.offer.performerEmail===mail.to && (c.bookingId || c.paymentId)===mail.bookingId);
+    if (mail.kind==="receipt" && !contractForReceipt) {
       mail.status="superseded"; mail.error="Signed receipt unavailable."; continue;
     }
     if (mail.kind==="verification" && Date.now()-Date.parse(mail.createdAt)>30*60000) { mail.status="failed"; mail.error="Verification expired. Request a new link."; delivery.failed++; continue; }
@@ -1030,9 +1074,17 @@ function processBookingMail(book,state,props) {
     }
     if (reserved) { mail.status="uncertain"; mail.error="Google did not confirm sending. Copy the link to share manually."; delivery.failed++; continue; }
     if (quota<1) { mail.error="Email quota or permission unavailable. Automatic delivery will retry."; delivery.failed++; continue; }
+    const contractOffer = contractForReceipt?.offer || (mail.kind==="contract" &&
+      state.invites.find(i=>i.id===mail.id.slice(9))?.offer);
+    const attach = contractOffer?.conditionsVersion===DMF_CONDITIONS_VERSION;
+    if (attach && !pdf) {
+      try { pdf = originalDmfAttachment(); }
+      catch (_) { mail.error="MAIL_ATTACHMENT"; delivery.failed++; continue; }
+    }
     props.setProperty(key,"sending");
     try {
-      MailApp.sendEmail({to:mail.to,replyTo:state.venue.email,name:state.venue.name,subject:mail.subject,body:mail.body});
+      MailApp.sendEmail({to:mail.to,replyTo:state.venue.email,name:state.venue.name,subject:mail.subject,body:mail.body,
+        ...(attach ? {attachments:[pdf]} : {})});
       mail.status="sent"; mail.sentAt=new Date().toISOString(); mail.error=undefined; quota--; delivery.sent++;
       props.setProperty(key,mail.sentAt); completed.push(key);
       if (mail.kind==="contract") {
@@ -1082,6 +1134,7 @@ function refreshBookingProjection(book,state) {
   const workflow=bookingWorkflowEnabled(sheet);
   const actions=workflow && sheet.getMaxColumns() >= 45 &&
     sheet.getRange("AR1").getValue() === "Workflow status";
+  const scheduleColumns=actions && sheet.getMaxColumns()>=51 && sheet.getRange("AT1").getValue()==="Genre";
   const rows=sheet.getRange(2,1,sheet.getLastRow()-1,workflow ? 29+BOOKING_WORKFLOW_HEADERS.length : 28).getValues();
   rows.forEach((row,index)=>{
     const booking=(state.bookings || []).find(b=>b.id===String(row[22]));
@@ -1102,6 +1155,15 @@ function refreshBookingProjection(book,state) {
       if (url && /^[a-f0-9-]{36}$/i.test(booking.id))
         cell.setRichTextValue(SpreadsheetApp.newRichTextValue().setText(next[0]).setLinkUrl(url).build());
       else cell.clearContent();
+    }
+    if (scheduleColumns) {
+      const p = booking.performance;
+      const safe = text => String(text || "").startsWith("=") ? "'"+text : text || "";
+      const time = value => value ? sheetValue(value,TIME_FORMAT,"").numberValue : "";
+      sheet.getRange(index+2,46,1,6).setValues([[
+        safe(p?.genre), time(p?.getIn), p?.soundcheck || "", time(p?.soundcheckTime),
+        time(p?.end), safe(p?.technicalNotes)
+      ]]);
     }
     const paid=booking.members.length===booking.expectedMembers && booking.members.length>0 && booking.members.every(m=>m.paymentId && (state.payments || []).some(p=>p.id===m.paymentId && !p.voidReason));
     const total=booking.fee && (!booking.artistFirst || booking.performance) ?
@@ -1147,6 +1209,20 @@ function ensureBookingActionColumns(sheet) {
   if (current.some(Boolean) || (sheet.getLastRow() > 1 && !sheet.getRange(2,44,sheet.getLastRow()-1,2).isBlank()))
     throw Error("Preserve the existing contents in AR:AS before adding workflow columns.");
   headers.setValues([["Workflow status","Next action"]]).setFontWeight("bold");
+}
+
+function ensureBookingScheduleColumns(sheet) {
+  if (!bookingWorkflowEnabled(sheet) || typeof sheet.getSheetId !== "function") return;
+  if (sheet.getMaxColumns()<51) sheet.insertColumnsAfter(sheet.getMaxColumns(),51-sheet.getMaxColumns());
+  const values = ["Genre","Get-in","Soundcheck","Soundcheck time","Ends","Technical notes"];
+  const headers = sheet.getRange(1,46,1,values.length);
+  const existing = headers.getValues()[0];
+  if (existing.join("|")===values.join("|")) return;
+  if (existing.some(Boolean) || (sheet.getLastRow()>1 && !sheet.getRange(2,46,sheet.getLastRow()-1,values.length).isBlank()))
+    throw Error("Preserve the existing contents in AT:AY before adding the technical schedule.");
+  headers.setValues([values]).setFontWeight("bold");
+  sheet.getRange("AU:AU").setNumberFormat("hh:mm");
+  sheet.getRange("AW:AX").setNumberFormat("hh:mm");
 }
 
 const AUDIT_HEADERS = ["Timestamp","Action","Actor","Booking ID","Musician ID"];
@@ -1259,6 +1335,7 @@ function stagebookRetention(dryRun) {
     }
     anonymiseRetainedMusicians(state,plan,new Date().toISOString());
     const extra = retentionSheetRequests(book,state,plan);
+    removeExpiredSensitiveRows(props,plan.ids);
     state.revision++;
     writeWorkbook(book,state,audit,extra);
     return plan.counts;
@@ -1327,20 +1404,20 @@ function anonymiseRetainedMusicians(state,plan,at) {
   for (const m of state.musicians) if (plan.ids.has(m.id)) {
     Object.assign(m,{name:label,email:"",phone:"",address:"",band:"",cpr:"",cvr:"",registration:"",account:"",iban:"",
       retainedAnonymouslyAt:at,deletedAt:at,updatedAt:at});
-    for (const key of ["mobilepay","mobilePay","mobilePayNumber","performance","privacyAcknowledgement"])
+    for (const key of ["mobilepay","mobilePay","mobilePayNumber","sensitiveRef","performance","privacyAcknowledgement"])
       delete m[key];
   }
   for (const b of state.bookings || []) if (plan.bookings.has(b.id)) {
     for (const m of b.members) if (plan.members.has(m.id)) {
       m.name = label; m.email = "";
-      for (const key of ["payout","performer","privacyAcknowledgement","exceptionResolution"]) delete m[key];
+      for (const key of ["payout","performer","sensitiveRef","privacyAcknowledgement","exceptionResolution"]) delete m[key];
     }
     b.act = deidentifyAct(b.act);
     delete b.promotion;
     delete b.attendanceNote;
     delete b.correction;
     delete b.approvedBy;
-    if (b.performance) b.performance.requests = "";
+    if (b.performance) { b.performance.requests = ""; b.performance.technicalNotes = ""; }
     if (plan.contacts.has(b.id)) {
       b.contactEmail = ""; b.contactName = ""; b.contactPhone = "";
       delete b.contactPrivacyAcknowledgement;
@@ -1399,10 +1476,203 @@ function retentionSheetRequests(book,state,plan) {
   return requests;
 }
 
+const SENSITIVE_FIELDS = ["cpr","registration","account","iban","mobilePayNumber"];
+const SENSITIVE_HEADERS = ["Reference","Musician ID","Details"];
+function sensitiveStorage(props,create) {
+  const id = props.getProperty("SENSITIVE_SPREADSHEET_ID");
+  if (!id || id === props.getProperty("SPREADSHEET_ID"))
+    throw Error("Configure a separate owner-only sensitive workbook.");
+  const book = SpreadsheetApp.openById(id);
+  const owner = book.getOwner()?.getEmail();
+  if (!owner || owner !== Session.getEffectiveUser().getEmail() ||
+      book.getEditors().some(user=>user.getEmail()!==owner) || book.getViewers().length)
+    throw Error("The sensitive workbook must be owned by the deployment owner and restricted.");
+  let sheet = book.getSheetByName("Sensitive");
+  if (!sheet && create) sheet = book.insertSheet("Sensitive");
+  if (!sheet) throw Error("Set up the sensitive workbook.");
+  if (!sheet.getLastRow() && create) sheet.getRange(1,1,1,3).setValues([SENSITIVE_HEADERS]);
+  if (sheet.getRange(1,1,1,3).getValues()[0].join("|") !== SENSITIVE_HEADERS.join("|"))
+    throw Error("Preserve the existing Sensitive tab before proceeding.");
+  return {book,sheet};
+}
+function sensitiveData(value) {
+  return Object.fromEntries(SENSITIVE_FIELDS.map(key=>[key,String(value?.[key] || "")]));
+}
+function sensitiveRows(store) {
+  const last = store.sheet.getLastRow();
+  return last < 2 ? [] : store.sheet.getRange(2,1,last-1,3).getValues();
+}
+function sensitiveMask(value) {
+  const text = String(value || "");
+  return text ? "••••" + (text.length > 4 ? text.slice(-4) : "") : "";
+}
+function sensitiveView(book,state,request,props) {
+  const booking = request.bookingId && (state.bookings || []).find(b=>b.id===request.bookingId);
+  const member = booking && request.memberId && booking.members.find(m=>m.id===request.memberId);
+  const targets = request.bookingId
+    ? (request.memberId ? (member ? [member] : []) : booking?.members || [])
+    : state.musicians.filter(m=>m.id===request.musicianId && !m.retainedAnonymouslyAt);
+  if (!targets.length) return {ok:false};
+  const members = new Map(state.musicians.map(m=>[m.id,m]));
+  const needed = new Set(targets.map(t=>t.sensitiveRef).filter(Boolean));
+  const refs = new Map();
+  if (needed.size && props.getProperty("SENSITIVE_MIGRATED")==="true")
+    for (const [ref,,payload] of sensitiveRows(sensitiveStorage(props,false))) if (needed.has(ref)) refs.set(ref,payload);
+  const reveal = request.mode==="reveal";
+  const records = targets.map(target=>{
+    const musician = "musicianId" in target ? members.get(target.musicianId) : target;
+    const ref = "musicianId" in target ? target.sensitiveRef : musician?.sensitiveRef;
+    const fallback = target.payout || musician;
+    const raw = ref ? sensitiveData(refs.has(ref) ? JSON.parse(refs.get(ref)) : null) : sensitiveData(fallback);
+    if (!ref && (target.paymentType || musician?.preferredPaymentType)==="Mobilepay")
+      raw.mobilePayNumber ||= fallback?.phone || "";
+    return {id:target.id,...Object.fromEntries(SENSITIVE_FIELDS.map(key=>[key,reveal ? raw[key] : sensitiveMask(raw[key])]))};
+  });
+  if (reveal) {
+    const rows = targets.map(target=>auditRow("Sensitive fields revealed","admin",booking?.id,target.musicianId || target.id));
+    Sheets.Spreadsheets.batchUpdate({requests:[auditAppend(book,rows)]},book.getId());
+  }
+  return {ok:true,records};
+}
+function persistSensitive(state,props,migrating) {
+  const profiles = new Map(state.musicians.map(m=>[m.id,m]));
+  const rawPresent = value => SENSITIVE_FIELDS.some(key=>Boolean(value?.[key]));
+  if (!migrating && !state.musicians.some(rawPresent) &&
+      !(state.bookings || []).some(b=>b.members.some(m=>rawPresent(m.payout)))) return;
+  if (!migrating && props.getProperty("SENSITIVE_MIGRATED")!=="true")
+    throw Error("Complete the sensitive workbook migration before accepting new payout details.");
+  const store = sensitiveStorage(props,migrating);
+  const rows = sensitiveRows(store);
+  const records = new Map(rows.map(([ref,,payload])=>[ref,payload]));
+  const toWrite = [];
+  const clearedContactPhones = new Set();
+  function keep(value,ownerId,prior,method) {
+    const current = records.has(prior) ? JSON.parse(records.get(prior)) : {};
+    const details = sensitiveData(value);
+    if (details.iban || details.registration || details.account) {
+      if (!migrating && !(details.iban || (details.registration && details.account)))
+        throw Error("Enter the complete bank details.");
+    } else if (method==="Bank transfer") {
+      details.registration = current.registration || "";
+      details.account = current.account || "";
+      details.iban = current.iban || "";
+    }
+    details.cpr ||= current.cpr || "";
+    if (method==="Mobilepay") details.mobilePayNumber ||= current.mobilePayNumber || "";
+    const payload = JSON.stringify(details);
+    if (!Object.values(details).some(Boolean)) return undefined;
+    if (records.get(prior)===payload) return prior;
+    const ref = bookingHmac("stagebook-sensitive:" + ownerId + ":" + payload,props);
+    if (!records.has(ref)) {
+      records.set(ref,payload);
+      toWrite.push([ref,ownerId,payload]);
+    }
+    return ref;
+  }
+  for (const musician of state.musicians) {
+    if (migrating && !musician.sensitiveRef && musician.preferredPaymentType==="Mobilepay" && !musician.mobilePayNumber) {
+      musician.mobilePayNumber = musician.phone;
+      for (const contract of [...(state.contracts || []),...state.invites])
+        if (contract.musicianId===musician.id && contract.performer?.phone===musician.phone) contract.performer.phone = "";
+      musician.phone = "";
+    }
+    if (rawPresent(musician)) musician.sensitiveRef = keep(musician,musician.id,musician.sensitiveRef,musician.preferredPaymentType || "Bank transfer");
+    for (const key of SENSITIVE_FIELDS) delete musician[key];
+  }
+  for (const booking of state.bookings || []) for (const member of booking.members) {
+    const profile = profiles.get(member.musicianId);
+    const method = member.paymentType || booking.paymentType;
+    if (migrating && method==="Mobilepay") {
+      const old = member.payout?.phone || member.performer?.phone;
+      if (old) {
+        member.payout ||= {};
+        if (!member.payout.mobilePayNumber) member.payout.mobilePayNumber = old;
+        if (member.performer?.phone===old) member.performer.phone = "";
+        if (booking.contactPhone===old && booking.contactEmail===member.email) {
+          booking.contactPhone = "";
+          clearedContactPhones.add(booking.id);
+        }
+        for (const contract of [...(state.contracts || []),...state.invites])
+          if (contract.memberId===member.id && contract.performer?.phone===old) contract.performer.phone = "";
+      }
+    }
+    if (rawPresent(member.payout))
+      member.sensitiveRef = keep(member.payout,member.musicianId,member.sensitiveRef || profile?.sensitiveRef,method);
+    else if (migrating || !member.sensitiveRef) member.sensitiveRef ||= profile?.sensitiveRef;
+    if (member.payout) {
+      for (const key of SENSITIVE_FIELDS) delete member.payout[key];
+      delete member.payout.phone;
+    }
+  }
+  if (toWrite.length) Sheets.Spreadsheets.batchUpdate({requests:[{
+    appendCells:{sheetId:store.sheet.getSheetId(),fields:"userEnteredValue",rows:toWrite.map(row=>({
+      values:row.map(stringValue=>({userEnteredValue:{stringValue}}))
+    }))}
+  }]},store.book.getId());
+  return clearedContactPhones;
+}
+function clearMigratedContactPhones(book,ids) {
+  const sheet = book.getSheetByName("Bookings");
+  if (!ids.size || !sheet || sheet.getLastRow() < 2 || !bookingWorkflowEnabled(sheet)) return [];
+  return sheet.getRange(2,23,sheet.getLastRow()-1,1).getValues().flatMap(([id],index)=>ids.has(id) ? [{
+    updateCells:{range:{sheetId:sheet.getSheetId(),startRowIndex:index+1,endRowIndex:index+2,
+      startColumnIndex:30,endColumnIndex:31},rows:[],fields:"userEnteredValue"}
+  }] : []);
+}
+function migrateStagebookSensitiveData() {
+  const props = PropertiesService.getScriptProperties();
+  const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
+  const owner = book.getOwner()?.getEmail();
+  const backupId = props.getProperty("SENSITIVE_BACKUP_ID");
+  if (!owner || owner !== Session.getActiveUser().getEmail())
+    throw Error("Only the workbook owner can migrate payout data.");
+  if (props.getProperty("SENSITIVE_MIGRATED")==="true") return;
+  if (!backupId || backupId===book.getId() || backupId===props.getProperty("SENSITIVE_SPREADSHEET_ID"))
+    throw Error("Create a separate restricted backup and set SENSITIVE_BACKUP_ID.");
+  const backup = SpreadsheetApp.openById(backupId);
+  if (backup.getOwner()?.getEmail()!==owner || !backup.getSheetByName("_Stagebook") ||
+      backup.getEditors().some(user=>user.getEmail()!==owner) || backup.getViewers().length)
+    throw Error("Use a restricted backup of the main workbook.");
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const state = readStoredState(book);
+    if (!state) throw Error("The Stagebook workspace is missing.");
+    const clearedPhones = persistSensitive(state,props,true);
+    state.revision++;
+    writeWorkbook(book,state,[],clearMigratedContactPhones(book,clearedPhones));
+    props.setProperty("SENSITIVE_MIGRATED","true");
+  } finally { lock.releaseLock(); }
+}
+function removeExpiredSensitiveRows(props,ids) {
+  if (props.getProperty("SENSITIVE_MIGRATED")!=="true") return;
+  const store = sensitiveStorage(props,false);
+  const ranges = sensitiveRows(store).flatMap(([,id],index)=>ids.has(id) ? [{
+    updateCells:{range:{sheetId:store.sheet.getSheetId(),startRowIndex:index+1,endRowIndex:index+2,
+      startColumnIndex:0,endColumnIndex:3},rows:[],fields:"userEnteredValue"}
+  }] : []);
+  if (ranges.length) Sheets.Spreadsheets.batchUpdate({requests:ranges},store.book.getId());
+}
+
 // Shared booking workflow. Regenerate with npm run sync:booking-workflow.
 function today() { return Utilities.formatDate(new Date(),"Europe/Copenhagen","yyyy-MM-dd"); }
 function bookingRegistrationClosed(b) { return b.approvedVersion===b.version || b.contractsVersion===b.version; }
 function hasOtherPaymentPath(state,v,manual) { return (state.payments || []).some(p=>!p.voidReason && p.kind==="Payment" && Boolean(p.bookingId)===manual && p.musicianId===v.musicianId && p.performedOn===v.performedOn && normalizeBand(p.band)===normalizeBand(v.band)); }
+function tariff(date) {
+    if (date < "2026-04-01")
+        return 0;
+    return date >= "2027-04-01" ? 320000 : 315000;
+}
+function tariffWarning(date, fee) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(fee) || fee <= 0)
+        return "";
+    const minimum = tariff(date);
+    return fee < minimum
+        ? "This fee is below DMF's minimum tariff of " +
+            (minimum / 100).toLocaleString("en-GB") +
+            " kr per musician."
+        : "";
+}
 function deriveBookingStage(f) {
     if (f.cancelled)
         return { label: "Cancelled", action: "none" };

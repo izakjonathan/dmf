@@ -1,4 +1,5 @@
 "use client";
+import { RevealSensitive } from "./RevealSensitive";
 import {
   useCallback,
   useEffect,
@@ -8,7 +9,7 @@ import {
 } from "react";
 import { bookingOverview, signingDeadline, type Booking } from "@/lib/bookings";
 import { AttendanceEditor } from "./AttendanceEditor";
-import { money, today } from "@/lib/model";
+import { money, tariffWarning, today } from "@/lib/model";
 function bookingDate(date: string) {
   const [year, month, day] = date.split("-");
   return `${day}/${month}/${year}`;
@@ -24,7 +25,7 @@ type Account = {
   registration?: string;
   account?: string;
   iban?: string;
-  phone?: string;
+  mobilePayNumber?: string;
   payee?: string;
   cvr?: string;
 };
@@ -73,6 +74,8 @@ export default function Bookings({
   const saving = useRef(false);
   const bookingRequest = useRef("");
   const [updated, setUpdated] = useState("");
+  const [feeDraft, setFeeDraft] = useState({ date: "", fee: 0 });
+  const feeWarning = tariffWarning(feeDraft.date, feeDraft.fee);
   const load = useCallback(async () => {
     if (saving.current) return;
     const generation = ++requestGeneration.current;
@@ -459,14 +462,27 @@ export default function Bookings({
                   fee: Math.round(Number(fields.fee) * 100),
                   ticketPrice: Math.round(Number(fields.ticketPrice) * 100),
                 }).then((saved) => {
-                  if (saved) form.reset();
+                  if (saved) {
+                    form.reset();
+                    setFeeDraft({ date: "", fee: 0 });
+                  }
                 });
               }}
             >
               <div className="grid">
                 <label>
                   Performance date
-                  <input name="date" type="date" required />
+                  <input
+                    name="date"
+                    type="date"
+                    required
+                    onChange={(event) =>
+                      setFeeDraft({
+                        ...feeDraft,
+                        date: event.currentTarget.value,
+                      })
+                    }
+                  />
                 </label>
                 <label>
                   Artist or band
@@ -497,6 +513,14 @@ export default function Bookings({
                   Fee per musician (DKK)
                   <input
                     name="fee"
+                    onChange={(event) =>
+                      setFeeDraft({
+                        ...feeDraft,
+                        fee: Math.round(
+                          event.currentTarget.valueAsNumber * 100,
+                        ),
+                      })
+                    }
                     type="number"
                     min="0.01"
                     max={1000000}
@@ -516,6 +540,11 @@ export default function Bookings({
                   />
                 </label>
               </div>
+              {feeWarning && (
+                <p role="status" className="fine">
+                  {feeWarning}
+                </p>
+              )}
               <button disabled={busy}>Save booking</button>
             </form>
           </details>
@@ -788,6 +817,29 @@ export default function Bookings({
                                 <p className="error">{booking.sourceError}</p>
                               )}
                               <Schedule booking={booking} />
+                              {tariffWarning(booking.date, booking.fee) && (
+                                <p className="fine">
+                                  {tariffWarning(booking.date, booking.fee)}
+                                </p>
+                              )}
+                              {booking.performance &&
+                                !booking.cancelled &&
+                                !booking.sourceError &&
+                                booking.contractsVersion !== booking.version &&
+                                booking.approvedVersion !== booking.version && (
+                                  <TechnicalSchedule
+                                    key={booking.id + ":" + booking.version}
+                                    performance={booking.performance}
+                                    busy={busy}
+                                    save={(fields) =>
+                                      void act(
+                                        "technicalSchedule",
+                                        booking.id,
+                                        fields,
+                                      )
+                                    }
+                                  />
+                                )}
                               {booking.date <= today() &&
                                 !booking.cancelled &&
                                 !booking.sourceError &&
@@ -1606,6 +1658,7 @@ export default function Bookings({
                         <PaymentDetails
                           method={member.paymentType}
                           account={account}
+                          bookingId={booking.id}
                         />
                       </div>
                     ))}
@@ -1694,6 +1747,72 @@ export default function Bookings({
     </section>
   );
 }
+function TechnicalSchedule({
+  performance,
+  busy,
+  save,
+}: {
+  performance: NonNullable<Booking["performance"]>;
+  busy: boolean;
+  save: (data: Record<string, FormDataEntryValue>) => void;
+}) {
+  const [soundcheck, setSoundcheck] = useState(performance.soundcheck);
+  return (
+    <details>
+      <summary>Adjust technical schedule</summary>
+      <form
+        className="booking-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save({
+            soundcheckTime: "",
+            ...Object.fromEntries(new FormData(event.currentTarget)),
+          });
+        }}
+      >
+        <label>
+          Get-in time
+          <input name="getIn" type="time" defaultValue={performance.getIn} />
+        </label>
+        <label>
+          Soundcheck
+          <select
+            name="soundcheck"
+            value={soundcheck}
+            onChange={(event) =>
+              setSoundcheck(event.target.value as typeof soundcheck)
+            }
+          >
+            <option>Yes</option>
+            <option>No</option>
+          </select>
+        </label>
+        {soundcheck === "Yes" && (
+          <label>
+            Soundcheck time
+            <input
+              name="soundcheckTime"
+              type="time"
+              defaultValue={performance.soundcheckTime}
+              required
+            />
+          </label>
+        )}
+        <label>
+          Notes for technicians (optional)
+          <textarea
+            name="technicalNotes"
+            rows={2}
+            maxLength={1000}
+            defaultValue={performance.technicalNotes}
+          />
+        </label>
+        <button disabled={busy}>Save technical schedule</button>
+      </form>
+    </details>
+  );
+}
+
 function Schedule({ booking }: { booking: Booking }) {
   const p = booking.performance;
   return p ? (
@@ -1705,7 +1824,13 @@ function Schedule({ booking }: { booking: Booking }) {
       <span>
         {p.sets} × {p.minutesPerSet} minutes
       </span>
-      <span>Soundcheck · {p.soundcheck}</span>
+      {p.genre && <span>Genre · {p.genre}</span>}
+      {p.getIn && <span>Get-in · {p.getIn}</span>}
+      <span>
+        Soundcheck · {p.soundcheck}
+        {p.soundcheckTime && " · " + p.soundcheckTime}
+      </span>
+      {p.technicalNotes && <p>Notes · {p.technicalNotes}</p>}
       {p.requests && <p>Requests · {p.requests}</p>}
     </div>
   ) : (
@@ -1795,27 +1920,19 @@ function BookingChecklist({ booking }: { booking: View }) {
 function PaymentDetails({
   method,
   account,
+  bookingId,
 }: {
   method: View["members"][number]["paymentType"];
   account: Account;
+  bookingId: string;
 }) {
-  const [status, setStatus] = useState("");
   const details =
     method === "Bank transfer"
       ? account.iban ||
         [account.registration, account.account].filter(Boolean).join(" ")
       : method === "Mobilepay"
-        ? account.phone
+        ? account.mobilePayNumber
         : "";
-  async function copy() {
-    if (!details) return;
-    try {
-      await navigator.clipboard.writeText(details);
-      setStatus("Copied");
-    } catch {
-      setStatus("Select the details to copy.");
-    }
-  }
   return (
     <>
       <p>
@@ -1836,17 +1953,17 @@ function PaymentDetails({
                   " · Account " +
                   account.account}
           </span>
-          <button className="link" onClick={() => void copy()}>
-            Copy details
-          </button>
+          <RevealSensitive
+            target={{ bookingId, memberId: account.memberId }}
+            keys={
+              method === "Mobilepay"
+                ? ["mobilePayNumber"]
+                : ["iban", "registration", "account"]
+            }
+          />
         </div>
       ) : (
         <p>Payment details missing. Contact the musician.</p>
-      )}
-      {status && (
-        <p className="fine" role="status">
-          {status}
-        </p>
       )}
     </>
   );

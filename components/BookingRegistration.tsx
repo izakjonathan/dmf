@@ -5,6 +5,7 @@ import type { Musician } from "@/lib/model";
 import { money } from "@/lib/model";
 import { ArtistPerformanceFields } from "./Contract";
 import { BankFields } from "./BankFields";
+import type { SensitiveDetails } from "./RevealSensitive";
 import { Brand } from "./Dashboard";
 import { ViewportTheme } from "./ViewportTheme";
 import { PrivacyNotice } from "./PrivacyNotice";
@@ -34,7 +35,8 @@ type Details = {
   email?: string;
   isContact?: boolean;
   sharedPath?: string;
-  profile?: Musician | null;
+  profile?: Partial<Musician> | null;
+  masked?: SensitiveDetails;
   registered?: boolean;
   paymentType?: string;
 };
@@ -242,6 +244,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                       )}
                     </div>
                     <ArtistPerformanceFields
+                      contact
                       value={details.booking.performance}
                     />
                     <label>
@@ -336,14 +339,13 @@ export default function BookingRegistration({ token }: { token: string }) {
                         />
                       </label>
                       <label>
-                        Phone / Mobilepay number
+                        Contact phone (optional)
                         <input
                           name="phone"
                           type="tel"
                           autoComplete="tel"
                           defaultValue={details.profile?.phone}
                           maxLength={300}
-                          required={paymentType === "Mobilepay"}
                         />
                       </label>
                       <label>
@@ -385,6 +387,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                       <label>
                         CPR (optional)
                         <input
+                          placeholder={details.masked?.cpr}
                           name="cpr"
                           pattern="[0-9]{6}-?[0-9]{4}"
                           autoComplete="off"
@@ -407,8 +410,20 @@ export default function BookingRegistration({ token }: { token: string }) {
                         <option>Mobilepay</option>
                       </select>
                     </label>
+                    {paymentType === "Mobilepay" && (
+                      <label>
+                        MobilePay number
+                        <input
+                          name="mobilePayNumber"
+                          type="tel"
+                          autoComplete="off"
+                          placeholder={details.masked?.mobilePayNumber}
+                          required={!details.masked?.mobilePayNumber}
+                        />
+                      </label>
+                    )}
                     {paymentType === "Bank transfer" && (
-                      <BankFields profile={details.profile || undefined} />
+                      <BankFields masked={details.masked} />
                     )}
                     <p className="fine">
                       {paymentType && <>Payment method · {paymentType}. </>}{" "}

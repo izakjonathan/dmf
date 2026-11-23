@@ -1,17 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import type { Musician } from "@/lib/model";
+import type { SensitiveDetails } from "./RevealSensitive";
 
-export function BankFields({
-  profile,
-}: {
-  profile?: Pick<Musician, "registration" | "account" | "iban">;
-}) {
-  const [method, setMethod] = useState(profile?.iban ? "iban" : "danish");
+export function BankFields({ masked }: { masked?: SensitiveDetails }) {
+  const [method, setMethod] = useState(masked?.iban ? "iban" : "danish");
+  const canKeep =
+    method === "iban" ? Boolean(masked?.iban) : Boolean(masked?.account);
   return (
     <fieldset className="form-fieldset">
       <legend>Bank details</legend>
+      {(masked?.iban || masked?.account) && (
+        <p className="fine">
+          Saved account · {masked.iban || masked.account}. Leave blank to keep
+          it.
+        </p>
+      )}
       <label>
         Account format
         <select
@@ -27,8 +31,7 @@ export function BankFields({
           IBAN
           <input
             name="iban"
-            defaultValue={profile?.iban}
-            required
+            required={!canKeep}
             autoComplete="off"
             autoCapitalize="characters"
             spellCheck={false}
@@ -41,10 +44,9 @@ export function BankFields({
             Bank registration number
             <input
               name="registration"
-              defaultValue={profile?.registration}
               inputMode="numeric"
               pattern="[0-9]{4}"
-              required
+              required={!canKeep}
               autoComplete="off"
             />
           </label>
@@ -52,10 +54,9 @@ export function BankFields({
             Bank account number
             <input
               name="account"
-              defaultValue={profile?.account}
               inputMode="numeric"
               pattern="[0-9]{6,10}"
-              required
+              required={!canKeep}
               autoComplete="off"
             />
           </label>
