@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import { createHash, createHmac } from "node:crypto";
 import ts from "typescript";
 import * as model from "../lib/model.ts";
+import * as privacy from "../lib/privacy.ts";
 import * as bookingModel from "../lib/bookings.ts";
 
 test("booking API completes registration, signatures, attendance and payment without exposing another musician's bank details", async () => {
@@ -72,6 +73,7 @@ test("booking API completes registration, signatures, attendance and payment wit
         syncs++;
         return { state: structuredClone(state) };
       }
+      if (action === "auditView") return { ok: true };
       assert.equal(action, "sheetBookingReview");
       assert.equal(options?.id, bookingId);
       if (!sheetReady) throw new RequestError("Booking source changed", 409);
@@ -81,7 +83,8 @@ test("booking API completes registration, signatures, attendance and payment wit
       next: typeof state,
       options?: { sheetBookingId: string },
     ) => {
-      if (options) assert.equal(options.sheetBookingId, bookingId);
+      if (options?.sheetBookingId)
+        assert.equal(options.sheetBookingId, bookingId);
       assert.equal(next.revision, state.revision);
       state = structuredClone({ ...next, revision: next.revision + 1 });
       return structuredClone(state);
@@ -129,6 +132,7 @@ test("booking API completes registration, signatures, attendance and payment wit
         if (name === "node:crypto") return { createHmac };
         if (name === "@/lib/server") return server;
         if (name === "@/lib/model") return model;
+        if (name === "@/lib/privacy") return privacy;
         if (name === "@/lib/bookings") return bookingModel;
         if (name === "zod")
           return { z: (model.venueSchema as any)._def ? requireZod : null };
@@ -184,9 +188,18 @@ test("booking API completes registration, signatures, attendance and payment wit
   assert.equal(publicResult.email, undefined);
   // The shared invitation must accept details immediately, without an email round trip.
   const beforeDirectRegistration = structuredClone(state);
+  const unchecked = await artist.POST(
+    post({ action: "register", profile: contact }),
+    context,
+  );
+  assert.equal(unchecked.status, 400);
+  assert.match((await unchecked.json()).error, /privacy notice/i);
+  assert.equal(state.bookings![0].members.length, 0);
+
   const direct = await artist.POST(
     post({
       action: "register",
+      privacyAcknowledged: "on",
       profile: {
         ...contact,
         account: "1234567890",
@@ -212,6 +225,7 @@ test("booking API completes registration, signatures, attendance and payment wit
       await artist.POST(
         post({
           action: "register",
+          privacyAcknowledged: "on",
           profile: { ...contact, preferredPaymentType: "Cash" },
         }),
         context,
@@ -230,6 +244,7 @@ test("booking API completes registration, signatures, attendance and payment wit
   const directAct = await artist.POST(
     post({
       action: "act",
+      privacyAcknowledged: "on",
       performance: {
         start: "21:00",
         end: "00:00",
@@ -250,6 +265,7 @@ test("booking API completes registration, signatures, attendance and payment wit
   const privateAct = await artist.POST(
     post({
       action: "act",
+      privacyAcknowledged: "on",
       performance: {
         start: "21:00",
         end: "00:00",
@@ -295,6 +311,7 @@ test("booking API completes registration, signatures, attendance and payment wit
     const submitted = await artist.POST(
       post({
         action: "register",
+        privacyAcknowledged: "on",
         verification: proof,
         profile: { ...person, preferredPaymentType: "Bank transfer" },
       }),
@@ -313,6 +330,7 @@ test("booking API completes registration, signatures, attendance and payment wit
   const unauthorisedAct = await artist.POST(
     post({
       action: "act",
+      privacyAcknowledged: "on",
       verification: proofs.get(musician.email),
       performance: schedule,
       expectedMembers: 2,
@@ -324,6 +342,7 @@ test("booking API completes registration, signatures, attendance and payment wit
   const updatedAct = await artist.POST(
     post({
       action: "act",
+      privacyAcknowledged: "on",
       verification: proofs.get(contact.email),
       performance: schedule,
       expectedMembers: 2,
@@ -542,9 +561,17 @@ test("booking API completes registration, signatures, attendance and payment wit
       token: hash(bookingModel.contactBookingId(booking)),
     }),
   };
+  const uncheckedContact = await artist.POST(
+    post({ action: "act" }),
+    contactContext,
+  );
+  assert.equal(uncheckedContact.status, 400);
+  assert.match((await uncheckedContact.json()).error, /privacy notice/i);
+  assert.equal(state.bookings![0].contactPrivacyAcknowledgement, undefined);
   const started = await artist.POST(
     post({
       action: "act",
+      privacyAcknowledged: "on",
       performance: {
         start: "20:00",
         end: "22:00",
@@ -562,18 +589,31 @@ test("booking API completes registration, signatures, attendance and payment wit
     contactContext,
   );
   assert.equal(started.status, 200);
+  assert.equal(
+    (state.bookings![0] as bookingModel.Booking).contactPrivacyAcknowledgement
+      ?.version,
+    privacy.privacyNoticeVersion,
+  );
   assert.equal(state.invites.length, 0);
   assert.equal(
     (
       await artist.POST(
         post({
           action: "register",
+          privacyAcknowledged: "on",
           profile: { ...contact, preferredPaymentType: "Bank transfer" },
         }),
         context,
       )
     ).status,
     200,
+  );
+  assert.equal(
+    state.bookings![0].members[0].privacyAcknowledgement?.version,
+    privacy.privacyNoticeVersion,
+  );
+  assert.ok(
+    state.bookings![0].members[0].privacyAcknowledgement?.acknowledgedAt,
   );
   const [invite] = state.invites;
   assert.ok(invite);

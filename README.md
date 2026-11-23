@@ -28,3 +28,46 @@ The Apps Script writes native dates, times and DKK amounts to the generated tabs
 ## Development
 
 Run `npm ci`, `npm test` and `npm run build`. The demo works without a workbook and keeps its sample data in memory.
+
+## Privacy and data
+
+The registration and act forms require acknowledgement of the notice. Every new
+submission records its notice version and a server timestamp. Earlier registrations
+carry no acknowledgement until submitted again. Edit the wording and version in
+[lib/privacy.ts](lib/privacy.ts).
+
+Keep the workbook owner-only while it still holds payout data. The app's AuditLog
+records booking, form, contract, attendance and payment events, plus full record
+views through the app. It uses event labels, booking and musician IDs and an actor.
+It does not cover direct Google Sheets access or downloads. A dry run does not write
+an audit row.
+
+### Retention (disabled by default)
+
+Confirm the period with the venue's accountant before enabling the job. Version
+history, earlier workbook copies, previously delivered email, and any exports need
+to be handled separately. A change to the current workbook does not erase those copies.
+
+1. Update the existing Apps Script web app with a new version of
+   [public/Code.gs](public/Code.gs), keeping its existing deployment URL. Then deploy
+   the corresponding Vercel build. This update adds no Vercel environment variables
+   and requires no data migration for the acknowledgement or audit log.
+2. Optionally set the script property `RETENTION_YEARS` (the default is 5).
+   Run `dryRunStagebookRetention` in the Apps Script editor. Review the counts
+   in the execution log. This neither changes the workbook nor sends mail.
+3. After the accountant confirms the period, the owner can run
+   `enableStagebookRetention` to start the daily job. The function manages
+   `RETENTION_ENABLED`; leave that property unset until then. Use
+   `disableStagebookRetention` to remove the trigger and disable future runs.
+
+The job keeps records through the end of the cutoff year. For example, with a
+five-year period, a last booking and payment in 2020 becomes eligible on
+1 January 2026. Stagebook uses the later booking or payment year and falls back to
+registration year for musicians who were never booked or paid. It also considers
+related profiles, linked contracts and future bookings. A historical booking with
+another musician’s unsettled payment defers anonymisation of its eligible musicians until
+that payment is resolved. The job removes direct identifiers and payout fields
+from eligible records and their linked copies and keeps pseudonymous IDs, dates,
+attendance, and payment amounts. It removes associated pending and historical
+outbox entries. It archives affected bookings so old registration links and
+historic worksheet rows cannot restore the removed data.

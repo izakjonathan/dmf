@@ -55,7 +55,9 @@ function doPost(event) {
       if (checkedBookings.some(id=>!sheetBookingMatches(book,request.state,id)))
         return respond({ok:false,error:"BOOKING_SOURCE_CHANGED"});
       step = "saving the workbook";
-      writeWorkbook(book, request.state);
+      const previous = readStoredState(book);
+      const audit = bookingAuditChanges(previous, request.state, request.actor === "staff");
+      writeWorkbook(book, request.state, audit);
       return respond({ok:true});
     }
     const length = storage.getLastRow();
@@ -107,11 +109,17 @@ function doPost(event) {
       try { handlers = ScriptApp.getProjectTriggers().map(trigger=>trigger.getHandlerFunction()); } catch (error) { console.warn("Stagebook triggers unavailable."); }
       return respond({ok:true,version:"booking-workflow-3",quota,scheduled:handlers.includes("runBookingAutomation"),onEdit:handlers.includes("bookingSheetEdited")});
     }
+    if (request.action === "auditView" && state?.auth) {
+      Sheets.Spreadsheets.batchUpdate({requests:[auditAppend(book,[
+        auditRow("Full record viewed", request.viewer, request.bookingId, request.musicianId)
+      ])]},book.getId());
+      return respond({ok:true});
+    }
     if (request.action === "metadata") return respond({ok:true,initialized:Boolean(state?.auth)});
     if (request.action === "read") return respond({ok:true,state:state});
     return respond({ok:false});
   } catch (error) {
-    console.error("Stagebook failed while " + step + ": " + error.message);
+    console.error("Stagebook failed while " + step + ".");
     return respond({ok:false,error:step === "sending contract emails" ? "MAIL_STATUS_UNAVAILABLE" : undefined});
   } finally {
     if (lock && lock.hasLock()) lock.releaseLock();
@@ -370,7 +378,7 @@ function applyDefaultFormats(requests,sheetId,rows,formats,existing) {
     }
   });
 }
-function writeWorkbook(book,state) {
+function writeWorkbook(book,state,audit = [],extraRequests = []) {
   const tables = rowsFor(state);
   let createdSheet = false;
   for (const name of ["Contracts","Booking members","Booking payments","Booking emails"]) {
@@ -417,11 +425,13 @@ function writeWorkbook(book,state) {
       }});
     }
   }
+  if (audit.length) requests.push(auditAppend(book,audit));
+  requests.push(...extraRequests);
   Sheets.Spreadsheets.batchUpdate({requests},book.getId());
   const bookingSheet=book.getSheetByName("Bookings");
   if ((state.bookings || []).length && bookingSheet && bookingSheet.getRange("A1").getValue()==="Dato") {
     try { refreshBookingProjection(book,state); }
-    catch (error) { console.warn("Booking projection will be retried: "+error.message); }
+    catch (error) { console.warn("Booking projection will be retried."); }
   }
 }
 
@@ -563,7 +573,7 @@ function bookingInputRow(row,modern) {
 function sheetBookingMatches(book,state,id) {
   const booking = state.bookings?.find(item=>item.id===id);
   const sheet = book.getSheetByName("Bookings");
-  if (!booking?.sourceSignature || booking.sourceError || !sheet || sheet.getLastRow()<2) return false;
+  if (!booking?.sourceSignature || booking.retentionArchived || booking.sourceError || !sheet || sheet.getLastRow()<2) return false;
   const modern = modernBookingSheet(sheet);
   const headers = modern ? BOOKING_OPERATIONS_HEADERS : BOOKING_HEADERS;
   const actual = sheet.getRange(1,1,1,headers.length).getValues()[0];
@@ -754,15 +764,20 @@ function runBookingAutomation() {
     processBookingMail(book,state,props);
     refreshBookingEmailStatuses(book,state);
   } catch (error) {
-    console.error("Stagebook booking automation: " + error.message);
-    throw error;
+    console.error("Stagebook booking automation failed.");
+    throw Error("Stagebook booking automation failed.");
   } finally { lock.releaseLock(); }
 }
 function syncAndQueueBookingMail(book,state,props) {
   const before = JSON.stringify([state.bookings,state.bookingMail]);
+  const known = new Set((state.bookings || []).map(booking=>booking.id));
   syncBookingRows(book,state,props);
   queueBookingReminders(state,props);
-  if (before!==JSON.stringify([state.bookings,state.bookingMail])) writeBookingState(book,state);
+  if (before!==JSON.stringify([state.bookings,state.bookingMail])) {
+    const audit = (state.bookings || []).filter(b=>!known.has(b.id))
+      .map(b=>auditRow("Booking created","admin",b.id));
+    writeBookingState(book,state,audit);
+  }
 }
 function bookingDate(value,zone) {
   if (value instanceof Date && !isNaN(value.getTime())) return Utilities.formatDate(value,zone,"yyyy-MM-dd");
@@ -824,6 +839,7 @@ function syncBookingRows(book,state,props) {
     if (!["yes","no","true","false","cancelled"].includes(cancelledText)) issue = "Cancelled must be Yes or No.";
     if (id && (!/^[a-f0-9-]{36}$/i.test(id) || occurrences.get(id)>1)) issue = "Duplicate or invalid Booking ID. Keep the original row and clear the copied ID to create another booking.";
     if (id) seen.add(id);
+    if (previous?.retentionArchived) return;
     let booking = state.bookings.find(item => item.id === id);
     if (issue) {
       if (booking) booking.sourceError = issue;
@@ -905,9 +921,9 @@ function syncBookingRows(book,state,props) {
     booking.sourceError = "The booking row is missing. Restore it in the sheet, or restore it and set Cancelled to Yes.";
   }
 }
-function writeBookingState(book,state) {
+function writeBookingState(book,state,audit) {
   state.revision++;
-  writeWorkbook(book,state);
+  writeWorkbook(book,state,audit);
 }
 function sheetBookingContractStatus(state,b) {
   if (b.cancelled) return "Cancelled";
@@ -937,7 +953,7 @@ function queueBookingReminders(state,props) {
   const day = Utilities.formatDate(now,"Europe/Copenhagen","yyyy-MM-dd");
   state.bookingMail = state.bookingMail || [];
   for (const booking of state.bookings || []) {
-    if (booking.cancelled || booking.sourceError || Date.parse(booking.date+"T12:00:00Z") - now.getTime() > 7*86400000) continue;
+    if (booking.cancelled || booking.retentionArchived || booking.sourceError || Date.parse(booking.date+"T12:00:00Z") - now.getTime() > 7*86400000) continue;
     if (booking.approvedVersion !== booking.version && booking.contractsVersion !== booking.version) {
       if (booking.date < day) continue;
       if (booking.members.length===booking.expectedMembers && booking.performance) continue;
@@ -1105,7 +1121,7 @@ function refreshBookingProjection(book,state) {
       const text = value => String(value || "").startsWith("=") ? "'"+value : value || "";
       const projection = [
         revenue,revenue!=="" && total>0 ? revenue/total : "",
-        bookingContactUrl(booking,PropertiesService.getScriptProperties()),
+        booking.retentionArchived ? "" : bookingContactUrl(booking,PropertiesService.getScriptProperties()),
         "https://dmf-eta.vercel.app/?booking="+booking.id,
         booking.performance?.start || "",booking.performance?.sets || "",booking.performance?.minutesPerSet || "",
         booking.confirmedAt ? "Confirmed by "+booking.confirmedBy : "Awaiting confirmation",
@@ -1131,6 +1147,256 @@ function ensureBookingActionColumns(sheet) {
   if (current.some(Boolean) || (sheet.getLastRow() > 1 && !sheet.getRange(2,44,sheet.getLastRow()-1,2).isBlank()))
     throw Error("Preserve the existing contents in AR:AS before adding workflow columns.");
   headers.setValues([["Workflow status","Next action"]]).setFontWeight("bold");
+}
+
+const AUDIT_HEADERS = ["Timestamp","Action","Actor","Booking ID","Musician ID"];
+function auditRow(action,actor,bookingId,musicianId) {
+  const id = value => /^[a-f0-9-]{36}$/i.test(value || "") ? value : "";
+  const name = String(actor || "admin");
+  // Staff link names are entered by the venue. Reject emails, numbers and URLs.
+  const safeActor = !/^[a-f0-9]{32,}$/i.test(name) && /^[\p{L} .’'\-]{1,100}$/u.test(name) ? name : "staff";
+  return [new Date().toISOString(),action,safeActor,id(bookingId),id(musicianId)];
+}
+function auditAppend(book,rows) {
+  let sheet = book.getSheetByName("AuditLog");
+  if (!sheet) {
+    sheet = book.insertSheet("AuditLog");
+    SpreadsheetApp.flush();
+  }
+  if (sheet.getLastRow() === 0) rows = [AUDIT_HEADERS,...rows];
+  else if (sheet.getRange(1,1,1,AUDIT_HEADERS.length).getValues()[0].join("|") !== AUDIT_HEADERS.join("|"))
+    throw Error("Preserve the existing AuditLog tab under a different name before continuing.");
+  return {appendCells:{sheetId:sheet.getSheetId(),fields:"userEnteredValue",rows:rows.map(row=>({
+    values:row.map(stringValue=>({userEnteredValue:{stringValue}}))
+  }))}};
+}
+function bookingAuditChanges(previous,state,staff) {
+  const rows = [];
+  const add = (action,actor,booking,musician) => rows.push(auditRow(action,actor,booking,musician));
+  const byId = list => new Map((list || []).map(item=>[item.id,item]));
+  const bookings = byId(previous?.bookings);
+  const musicians = byId(previous?.musicians);
+  const contracts = byId(previous?.contracts);
+  const invites = byId(previous?.invites);
+  const payments = byId(previous?.payments);
+  const memberBookings = new Map();
+  const nextMusicians = byId(state.musicians);
+  for (const b of state.bookings || []) {
+    const old = bookings.get(b.id);
+    if (!old) add("Booking created","admin",b.id);
+    if (b.contactPrivacyAcknowledgement?.acknowledgedAt &&
+        b.contactPrivacyAcknowledgement.acknowledgedAt !== old?.contactPrivacyAcknowledgement?.acknowledgedAt)
+      add("Contact form submitted","contact",b.id);
+    if (b.confirmedAt && b.confirmedAt !== old?.confirmedAt)
+      add("Attendance recorded",staff ? b.confirmedBy : "admin",b.id);
+    for (const m of b.members) {
+      const profile = nextMusicians.get(m.musicianId);
+      if (profile?.privacyAcknowledgement?.acknowledgedAt &&
+          (profile.privacyAcknowledgement.acknowledgedAt !== musicians.get(m.musicianId)?.privacyAcknowledgement?.acknowledgedAt) &&
+          m.privacyAcknowledgement?.acknowledgedAt === profile.privacyAcknowledgement.acknowledgedAt)
+        memberBookings.set(m.musicianId,b.id);
+    }
+  }
+  for (const m of state.musicians || [])
+    if (m.privacyAcknowledgement?.acknowledgedAt &&
+        m.privacyAcknowledgement.acknowledgedAt !== musicians.get(m.id)?.privacyAcknowledgement?.acknowledgedAt)
+      add("Musician form submitted","musician",memberBookings.get(m.id),m.id);
+  for (const invite of state.invites || []) if (invite.offer && !invites.has(invite.id)) {
+    add("Contract issued","admin",invite.bookingId,invite.musicianId);
+    if (invite.offer.organizerSignedAt) add("Venue signed contract","admin",invite.bookingId,invite.musicianId);
+  }
+  for (const contract of state.contracts || []) {
+    const before = contracts.get(contract.id);
+    if (!before) add("Musician signed contract","musician",contract.bookingId,contract.musicianId);
+    if (before && !before.offer.organizerSignedAt && contract.offer.organizerSignedAt)
+      add("Venue signed contract","admin",contract.bookingId,contract.musicianId);
+  }
+  for (const p of state.payments || []) if (!payments.has(p.id))
+    add("Payment recorded","admin",p.bookingId,p.musicianId);
+  return rows;
+}
+
+function retentionYears(props) {
+  const value = Number(props.getProperty("RETENTION_YEARS") || "5");
+  if (!Number.isInteger(value) || value < 1 || value > 100)
+    throw Error("RETENTION_YEARS must be a whole number between 1 and 100.");
+  return value;
+}
+function enableStagebookRetention() {
+  const props = PropertiesService.getScriptProperties();
+  retentionYears(props);
+  const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
+  if (book.getOwner()?.getEmail() !== Session.getActiveUser().getEmail())
+    throw Error("Only the owner can enable the retention job.");
+  if (!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==="runStagebookRetention"))
+    ScriptApp.newTrigger("runStagebookRetention").timeBased().everyDays(1).atHour(4).inTimezone("Europe/Copenhagen").create();
+  props.setProperty("RETENTION_ENABLED","true");
+}
+function disableStagebookRetention() {
+  PropertiesService.getScriptProperties().deleteProperty("RETENTION_ENABLED");
+  for (const trigger of ScriptApp.getProjectTriggers())
+    if (trigger.getHandlerFunction()==="runStagebookRetention") ScriptApp.deleteTrigger(trigger);
+}
+function dryRunStagebookRetention() { return stagebookRetention(true); }
+function runStagebookRetention() { return stagebookRetention(false); }
+function stagebookRetention(dryRun) {
+  const props = PropertiesService.getScriptProperties();
+  if (!dryRun && props.getProperty("RETENTION_ENABLED")!=="true") return;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
+    const state = readStoredState(book);
+    if (!state) return;
+    const date = today();
+    const plan = retentionPlan(state, Number(date.slice(0,4)) - retentionYears(props));
+    console.info(JSON.stringify(plan.counts));
+    if (dryRun) return plan.counts;
+    const audit = [auditRow("Retention run","system")];
+    if (!plan.ids.size) {
+      Sheets.Spreadsheets.batchUpdate({requests:[auditAppend(book,audit)]},book.getId());
+      return plan.counts;
+    }
+    anonymiseRetainedMusicians(state,plan,new Date().toISOString());
+    const extra = retentionSheetRequests(book,state,plan);
+    state.revision++;
+    writeWorkbook(book,state,audit,extra);
+    return plan.counts;
+  } catch (_) {
+    throw Error("Stagebook retention failed. Check the workbook configuration.");
+  } finally { lock.releaseLock(); }
+}
+function retentionPlan(state, cutoffYear) {
+  const byId = new Map(state.musicians.map(m=>[m.id,m]));
+  const family = m => {
+    const seen = new Set();
+    while (m?.mergedInto && byId.has(m.mergedInto) && !seen.has(m.id)) {
+      seen.add(m.id);
+      m = byId.get(m.mergedInto);
+    }
+    return m?.email?.trim().toLowerCase() || m?.id || "";
+  };
+  const latest = new Map();
+  const update = (key,date) => {
+    const year = /^\d{4}-\d{2}-\d{2}/.test(date || "") ? Number(date.slice(0,4)) : 0;
+    if (key && year) latest.set(key,Math.max(latest.get(key) || 0,year));
+  };
+  for (const b of state.bookings || []) {
+    update(b.contactEmail?.toLowerCase(),b.date);
+    for (const m of b.members) {
+      update(family(byId.get(m.musicianId)),b.date);
+      update(m.email?.toLowerCase(),b.date);
+    }
+  }
+  for (const p of state.payments) {
+    update(family(byId.get(p.musicianId)),p.performedOn);
+    update(family(byId.get(p.musicianId)),p.paidOn);
+  }
+  for (const c of state.contracts || []) update(family(byId.get(c.musicianId)),c.offer.performanceDate);
+  for (const i of state.invites) update(family(byId.get(i.musicianId)),i.offer?.performanceDate);
+  for (const m of state.musicians) {
+    const key = family(m);
+    if (key && !latest.has(key)) update(key,m.createdAt);
+  }
+  const eligible = state.musicians.filter(m=>!m.retainedAnonymouslyAt && latest.has(family(m)) && latest.get(family(m)) < cutoffYear &&
+    (!m.email || !latest.has(m.email.toLowerCase()) || latest.get(m.email.toLowerCase()) < cutoffYear));
+  const eligibleFamilies = new Set(eligible.map(family));
+  const held = new Set();
+  for (const b of state.bookings || []) {
+    if (b.cancelled || !b.members.some(m=>!m.exceptionResolution && !m.paymentId &&
+      !eligibleFamilies.has(family(byId.get(m.musicianId))))) continue;
+    for (const m of b.members) held.add(family(byId.get(m.musicianId)));
+    held.add(b.contactEmail?.toLowerCase());
+  }
+  const expired = eligible.filter(m=>!held.has(family(m)));
+  const ids = new Set(expired.map(m=>m.id));
+  const emails = new Set(expired.map(m=>m.email?.toLowerCase()).filter(Boolean));
+  const bookings = (state.bookings || []).filter(b=>b.members.some(m=>ids.has(m.musicianId)) || emails.has(b.contactEmail?.toLowerCase()));
+  const contacts = new Set(bookings.filter(b=>emails.has(b.contactEmail?.toLowerCase())).map(b=>b.id));
+  const members = new Set(bookings.flatMap(b=>b.members.filter(m=>ids.has(m.musicianId)).map(m=>m.id)));
+  const contracts = new Set((state.contracts || []).filter(c=>ids.has(c.musicianId)).map(c=>c.id));
+  const mail = (state.bookingMail || []).filter(m=>members.has(m.memberId) || emails.has(m.to?.toLowerCase()) || (contacts.has(m.bookingId) && !m.memberId));
+  return {ids,emails,contacts,members,contracts,bookings:new Set(bookings.map(b=>b.id)),mail:new Set(mail.map(m=>m.id)),
+    counts:{musicians:ids.size,bookings:bookings.length,members:members.size,contracts:contracts.size,
+      payments:state.payments.filter(p=>ids.has(p.musicianId)).length,emails:mail.length,deferred:eligible.length-expired.length}};
+}
+function anonymiseRetainedMusicians(state,plan,at) {
+  const label = "Anonymised musician";
+  const names = new Set(state.musicians.filter(m=>plan.ids.has(m.id)).map(m=>m.name?.trim().toLowerCase()).filter(Boolean));
+  const deidentifyAct = value => names.has(value?.trim().toLowerCase()) ? "Anonymised act" : value;
+  for (const m of state.musicians) if (plan.ids.has(m.id)) {
+    Object.assign(m,{name:label,email:"",phone:"",address:"",band:"",cpr:"",cvr:"",registration:"",account:"",iban:"",
+      retainedAnonymouslyAt:at,deletedAt:at,updatedAt:at});
+    for (const key of ["mobilepay","mobilePay","mobilePayNumber","performance","privacyAcknowledgement"])
+      delete m[key];
+  }
+  for (const b of state.bookings || []) if (plan.bookings.has(b.id)) {
+    for (const m of b.members) if (plan.members.has(m.id)) {
+      m.name = label; m.email = "";
+      for (const key of ["payout","performer","privacyAcknowledgement","exceptionResolution"]) delete m[key];
+    }
+    b.act = deidentifyAct(b.act);
+    delete b.promotion;
+    delete b.attendanceNote;
+    delete b.correction;
+    delete b.approvedBy;
+    if (b.performance) b.performance.requests = "";
+    if (plan.contacts.has(b.id)) {
+      b.contactEmail = ""; b.contactName = ""; b.contactPhone = "";
+      delete b.contactPrivacyAcknowledgement;
+    }
+    // A historical row containing retired personal details must not be reimported.
+    b.retentionArchived = true;
+    delete b.sourceSignature;
+  }
+  for (const p of state.payments) if (plan.ids.has(p.musicianId)) {
+    p.name = label;
+    p.band = deidentifyAct(p.band);
+    p.notes = ""; p.reference = "";
+    if (p.voidReason) p.voidReason = "Voided";
+  }
+  const eraseOffer = offer => {
+    offer.performerEmail = ""; offer.organizerSigner = "";
+    offer.specialTerms = ""; offer.requests = "";
+    offer.bookingAct = deidentifyAct(offer.bookingAct);
+  };
+  for (const c of state.contracts || []) if (plan.contracts.has(c.id)) {
+    c.performer = {name:label,email:"",phone:"",address:"",band:"",cvr:"",payee:c.performer.payee};
+    c.performerSigner = "";
+    c.retentionArchived = true;
+    eraseOffer(c.offer);
+  }
+  state.invites = state.invites.filter(i=>!plan.ids.has(i.musicianId) && !plan.contracts.has(i.id) &&
+    !plan.members.has(i.memberId) && !plan.emails.has(i.offer?.performerEmail?.toLowerCase()));
+  if (state.bookingMail) state.bookingMail = state.bookingMail.filter(m=>!plan.mail.has(m.id));
+  if (state.bookingVerifications) state.bookingVerifications = state.bookingVerifications.filter(v=>!plan.emails.has(v.email?.toLowerCase()));
+}
+function retentionSheetRequests(book,state,plan) {
+  const sheet = book.getSheetByName("Bookings");
+  if (!sheet || sheet.getLastRow()<2) return [];
+  const modern = modernBookingSheet(sheet);
+  const workflow = modern && bookingWorkflowEnabled(sheet);
+  const ids = sheet.getRange(2,modern ? 23 : 9,sheet.getLastRow()-1,1).getValues();
+  const requests = [];
+  const bookings = new Map((state.bookings || []).map(b=>[b.id,b]));
+  ids.forEach(([id],i)=>{
+    if (!plan.bookings.has(id)) return;
+    // Source row fields that are not part of writeWorkbook's generated tables.
+    const act = bookings.get(id).act;
+    const actColumn = modern ? 2 : 1;
+    if (act === "Anonymised act") requests.push({updateCells:{
+      start:{sheetId:sheet.getSheetId(),rowIndex:i+1,columnIndex:actColumn},
+      rows:[{values:[{userEnteredValue:{stringValue:act}}]}],
+      fields:"userEnteredValue"
+    }});
+    const cols = modern ? [24] : [10];
+    if (plan.contacts.has(id)) cols.push(...(modern ? [9,10] : [2]));
+    if (workflow) cols.push(34,40,41,42,...(plan.contacts.has(id) ? [29,30] : []));
+    for (const column of cols) requests.push({updateCells:{range:{
+      sheetId:sheet.getSheetId(),startRowIndex:i+1,endRowIndex:i+2,startColumnIndex:column,endColumnIndex:column+1
+    },rows:[],fields:"userEnteredValue,textFormatRuns"}});
+  });
+  return requests;
 }
 
 // Shared booking workflow. Regenerate with npm run sync:booking-workflow.

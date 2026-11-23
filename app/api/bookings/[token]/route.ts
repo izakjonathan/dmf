@@ -1,3 +1,4 @@
+import { acknowledgePrivacy } from "@/lib/privacy";
 import { z } from "zod";
 import {
   artistPerformanceSchema,
@@ -16,6 +17,7 @@ import {
   readState,
   RequestError,
   sameOrigin,
+  sheets,
   token,
   writeState,
 } from "@/lib/server";
@@ -35,7 +37,12 @@ function findBooking(state: Workspace, raw: string) {
       equals(bookingToken(b.id), raw) ||
       equals(bookingToken(contactBookingId(b)), raw),
   );
-  if (!booking || booking.cancelled || booking.sourceError)
+  if (
+    !booking ||
+    booking.cancelled ||
+    booking.retentionArchived ||
+    booking.sourceError
+  )
     throw new RequestError("This booking is unavailable or cancelled.", 404);
   return booking;
 }
@@ -105,6 +112,12 @@ export async function GET(req: Request, context: Context) {
         (m) => !m.deletedAt && m.email.toLowerCase() === proof.email,
       );
     const { cpr, ...safeProfile } = profile || {};
+    if (profile)
+      await sheets("auditView", {
+        viewer: "musician",
+        bookingId: booking.id,
+        musicianId: profile.id,
+      });
     return json({
       ...publicDetails(state, booking),
       email: proof.email,
@@ -230,6 +243,9 @@ export async function POST(req: Request, context: Context) {
           "Only the booking contact can change the act details.",
           403,
         );
+      const contactPrivacyAcknowledgement = acknowledgePrivacy(
+        body.privacyAcknowledged,
+      );
       const performance = artistPerformanceSchema.parse(body.performance);
       const expected = z.coerce
         .number()
@@ -251,6 +267,7 @@ export async function POST(req: Request, context: Context) {
         ? JSON.parse(booking.sourceSignature)
         : null;
       Object.assign(booking, {
+        contactPrivacyAcknowledgement,
         performance,
         expectedMembers: expected,
         fee: source?.fee > 0 ? source.fee : proposedFee,
@@ -273,6 +290,9 @@ export async function POST(req: Request, context: Context) {
           .parse(body.promotion ?? {}),
       });
     } else if (body.action === "register") {
+      const privacyAcknowledgement = acknowledgePrivacy(
+        body.privacyAcknowledged,
+      );
       const input = musicianSchema.parse(body.profile);
       const paymentType = z
         .enum(["Cash", "Bank transfer", "Mobilepay"])
@@ -310,6 +330,7 @@ export async function POST(req: Request, context: Context) {
       const profile = {
         ...existing,
         ...input,
+        privacyAcknowledgement,
         deletedAt: undefined,
         id: existing?.id || crypto.randomUUID(),
         cpr: state.venue.collectCpr
@@ -331,12 +352,14 @@ export async function POST(req: Request, context: Context) {
           payout,
           name: profile.name,
           musicianId: profile.id,
+          privacyAcknowledgement,
           paymentType,
         });
       else
         booking.members.push({
           id: crypto.randomUUID(),
           musicianId: profile.id,
+          privacyAcknowledgement,
           name: profile.name,
           email: profile.email,
           performer,

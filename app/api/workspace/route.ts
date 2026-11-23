@@ -11,6 +11,7 @@ import {
   readState,
   RequestError,
   sameOrigin,
+  sheets,
   sendContractEmails,
   spreadsheet,
   registrationToken,
@@ -50,12 +51,18 @@ export async function GET(req: Request) {
     if (contractId !== null) {
       const contract = state.contracts?.find(({ id }) => id === contractId);
       if (!contract) throw new RequestError("Contract not found.", 404);
+      await sheets("auditView", {
+        viewer: "admin",
+        bookingId: contract.bookingId,
+        musicianId: contract.musicianId,
+      });
       return json({ contract });
     }
     const musicianId = params.get("musician");
     if (musicianId !== null) {
       const profile = state.musicians.find(({ id }) => id === musicianId);
       if (!profile) throw new RequestError("Musician not found.", 404);
+      await sheets("auditView", { viewer: "admin", musicianId });
       return json({ profile, collectCpr: state.venue.collectCpr });
     }
     return json({

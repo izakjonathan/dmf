@@ -206,7 +206,11 @@ export async function metadata(): Promise<{ initialized: boolean }> {
 }
 export async function writeState(
   state: Workspace,
-  options: { sheetBookingId?: string; sheetBookingIds?: string[] } = {},
+  options: {
+    sheetBookingId?: string;
+    sheetBookingIds?: string[];
+    actor?: "staff";
+  } = {},
 ) {
   const next = { ...state, revision: state.revision + 1 };
   await sheets("write", { state: next, expected: state.revision, ...options });

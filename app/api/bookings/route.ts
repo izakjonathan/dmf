@@ -101,6 +101,7 @@ export async function GET(req: Request) {
     if (bookingId) {
       const booking = state.bookings?.find((b) => b.id === bookingId);
       if (!booking) throw Error("Booking not found.");
+      await sheets("auditView", { viewer: "admin", bookingId });
       return json({
         accounts: booking.members.map((member) => {
           const musician = state.musicians.find(
@@ -174,10 +175,10 @@ export async function POST(req: Request) {
           .parse(input.data),
         by: access.name,
       });
-      const saved = await writeState(
-        state,
-        booking.artistFirst ? { sheetBookingId: booking.id } : undefined,
-      );
+      const saved = await writeState(state, {
+        actor: "staff",
+        sheetBookingId: booking.artistFirst ? booking.id : undefined,
+      });
       return json(nightResponse(saved, access));
     }
     if (input.action === "createBooking") {

@@ -1,5 +1,6 @@
 import type { Booking, BookingMail, BookingVerification } from "./bookings.ts";
 import { z } from "zod";
+import type { PrivacyAcknowledgement } from "./privacy.ts";
 
 const text = z.string().trim().max(300);
 const email = z
@@ -171,6 +172,7 @@ export type ContractOffer = Omit<
 };
 
 export type SignedContract = {
+  retentionArchived?: boolean;
   id: string;
   bookingId?: string;
   bookingVersion?: number;
@@ -205,6 +207,8 @@ export type Musician = Omit<z.infer<typeof musicianSchema>, "iban"> & {
   id: string;
   createdAt: string;
   updatedAt: string;
+  privacyAcknowledgement?: PrivacyAcknowledgement;
+  retainedAnonymouslyAt?: string;
   deletedAt?: string;
   mergedInto?: string;
 };
@@ -426,6 +430,7 @@ export function setMusicianDeleted(
 ) {
   const musician = state.musicians.find((item) => item.id === input.id);
   if (!musician) return "Musician not found.";
+  if (musician.retainedAnonymouslyAt) return "This profile was anonymised.";
   if (musician.mergedInto)
     return "This profile was merged into another musician.";
   if (Boolean(musician.deletedAt) === deleted) return null;
@@ -522,7 +527,10 @@ export function clientWorkspace(state: Workspace) {
     })),
     musicians: publicMusicians.filter((musician) => !musician.deletedAt),
     deletedMusicians: publicMusicians.filter(
-      (musician) => Boolean(musician.deletedAt) && !musician.mergedInto,
+      (musician) =>
+        Boolean(musician.deletedAt) &&
+        !musician.mergedInto &&
+        !musician.retainedAnonymouslyAt,
     ),
   };
 }

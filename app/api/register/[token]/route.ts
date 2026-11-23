@@ -1,3 +1,4 @@
+import { acknowledgePrivacy } from "@/lib/privacy";
 import {
   fail,
   bookingToken,
@@ -8,6 +9,7 @@ import {
   readState,
   RequestError,
   sameOrigin,
+  sheets,
   writeState,
 } from "@/lib/server";
 import {
@@ -46,6 +48,7 @@ export async function GET(_req: Request, context: Context) {
         /^[a-f0-9]{64}$/.test(token) &&
         state.contracts?.find(
           (item) =>
+            !item.retentionArchived &&
             item.bookingId &&
             item.offer.organizerSignedAt &&
             Date.parse(item.offer.organizerSignedAt) + 365 * 86400000 >
@@ -57,6 +60,11 @@ export async function GET(_req: Request, context: Context) {
           "This receipt link has expired. Ask the venue for a copy.",
           404,
         );
+      await sheets("auditView", {
+        viewer: "musician",
+        bookingId: contract.bookingId,
+        musicianId: contract.musicianId,
+      });
       return json({ receipt: contract });
     }
     const invite = findInvite(state, token);
@@ -180,6 +188,7 @@ export async function POST(req: Request, context: Context) {
       );
       return json({ ok: true, contract });
     }
+    const privacyAcknowledgement = acknowledgePrivacy(body.privacyAcknowledged);
     const input = musicianSchema.parse(body);
     const signature = offer
       ? performerSignatureSchema.parse(body.signature)
@@ -211,6 +220,7 @@ export async function POST(req: Request, context: Context) {
     const existing = state.musicians[index];
     const profile = {
       ...input,
+      privacyAcknowledgement,
       performance,
       cpr: (state.venue.collectCpr && input.cpr) || existing?.cpr || "",
       id: existing?.id || crypto.randomUUID(),
@@ -234,7 +244,7 @@ export async function POST(req: Request, context: Context) {
       state.contracts ??= [];
       state.contracts.push(contract);
       invite.signedAt = at;
-    } else if (existing) invite.revoked = true;
+    } else if (existing || !invite.registration) invite.revoked = true;
     await writeState(state);
     return json({ ok: true, contract });
   } catch (error) {

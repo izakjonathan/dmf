@@ -19,6 +19,7 @@ import {
 } from "./Contract";
 import { Brand } from "./Dashboard";
 import { ViewportTheme } from "./ViewportTheme";
+import { PrivacyNotice } from "./PrivacyNotice";
 type Details = {
   venue: {
     name: string;
@@ -313,6 +314,7 @@ export default function Registration({ token }: { token: string }) {
                   )
                 )}
                 <BankFields />
+                <PrivacyNotice venue={details.venue} kind="musician" />
               </>
             )}
             {(!details.offer || details.offer.artistPerformance) && (

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { PrivacyAcknowledgement } from "./privacy.ts";
 import { deriveBookingStage } from "./booking-stage.ts";
 import {
   artistPerformanceSchema,
@@ -20,6 +21,7 @@ export type BookingMember = {
   musicianId: string;
   email: string;
   name: string;
+  privacyAcknowledgement?: PrivacyAcknowledgement;
   contractId?: string;
   paymentType?: "Cash" | "Bank transfer" | "Mobilepay";
   performer?: Invite["performer"];
@@ -38,7 +40,9 @@ export type Booking = {
   contactEmail: string;
   contactName?: string;
   contactPhone?: string;
+  contactPrivacyAcknowledgement?: PrivacyAcknowledgement;
   artistFirst?: boolean;
+  retentionArchived?: boolean;
   contractsVersion?: number;
   promotion?: { bio: string; photoUrl: string; website: string };
   expectedMembers: number;
@@ -104,7 +108,7 @@ export type BookingVerification = {
 };
 export function activeBooking(state: Workspace, id: string) {
   const booking = state.bookings?.find((item) => item.id === id);
-  if (!booking || booking.cancelled)
+  if (!booking || booking.cancelled || booking.retentionArchived)
     throw Error("This booking is unavailable or cancelled.");
   return booking;
 }

@@ -7,6 +7,7 @@ import { ArtistPerformanceFields } from "./Contract";
 import { BankFields } from "./BankFields";
 import { Brand } from "./Dashboard";
 import { ViewportTheme } from "./ViewportTheme";
+import { PrivacyNotice } from "./PrivacyNotice";
 type Details = {
   booking: Pick<
     Booking,
@@ -117,7 +118,12 @@ export default function BookingRegistration({ token }: { token: string }) {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, verification, ...payload }),
+        body: JSON.stringify({
+          action,
+          verification,
+          privacyAcknowledged: fields.privacyAcknowledged,
+          ...payload,
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw Error(result.error || "Please try again.");
@@ -266,6 +272,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                         />
                       </label>
                     </div>
+                    <PrivacyNotice venue={details.venue} kind="contact" />
                     <div className="row">
                       <button disabled={busy}>Save act details</button>
                       <button
@@ -409,11 +416,7 @@ export default function BookingRegistration({ token }: { token: string }) {
                         <>Fee per musician · {money(details.booking.fee)}.</>
                       )}
                     </p>
-                    <p className="fine">
-                      {details.venue.legalName} uses your details for contracts,
-                      payments and accounting in its restricted Google Sheet.
-                      Contact {details.venue.email} for corrections.
-                    </p>
+                    <PrivacyNotice venue={details.venue} kind="musician" />
                     <button disabled={busy}>
                       {busy ? "Saving…" : "Save my details"}
                     </button>
