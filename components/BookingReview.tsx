@@ -100,7 +100,7 @@ export default function BookingReview({ id }: { id: string }) {
 
   return (
     <section className="booking-form" aria-labelledby="approval-heading">
-      <a href="/">Back to bookings</a>
+      <a href={"/?booking=" + id}>Back to booking</a>
       <h2 id="approval-heading">
         {review?.countersign
           ? "Countersign completed performance"

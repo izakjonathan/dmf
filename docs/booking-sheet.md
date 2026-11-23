@@ -6,6 +6,14 @@ The first 18 columns match the venue's original booking sheet. The active Stageb
 
 Deploy the application before updating the existing Apps Script web app with `public/Code.gs`. Use **Manage deployments → Edit → New version → Deploy** to keep the current web app URL. Reload the workbook to show the Stagebook menu. Approve the Google authorization prompt as the owner when needed. Existing booking triggers continue to run. **Bookings → Manage bookings → Update bookings** refreshes the sheet and its columns. For a legacy layout headed `Performance date`, run `upgradeBookingSheet` first. The upgrade keeps the original tab as a backup.
 
+## Daily workflow
+
+Each booking shows its **Workflow status** and, when staff can act, a **Next action**. In Sheets these are columns AR and AS. The link opens the exact booking, payment queue or contract review in Stagebook and works from a phone browser. Contract review remains under **Contracts**. The desktop Sheets menu remains available.
+
+A confirmed performance with an absent musician can proceed to countersigning and payment for the musicians who performed and signed. Keep the affected musician's exception open until its fee has been handled separately or no fee is due. Record the reason and your name under **Details → Resolve performance exception**. Stagebook retains the original attendance and signed records. The booking stays open until outstanding payments and exceptions are resolved.
+
+The **Payment complete** checkbox in column B is a technical output. Record processed payments through the booking's action. If delivery is uncertain, open the affected booking's email details and verify delivery before sharing a replacement link.
+
 ## Work from either surface
 
 | Task | Google Sheets | Stagebook |

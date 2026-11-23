@@ -3,6 +3,7 @@ import {
   admin,
   bookingSigningCredentials,
   bookingToken,
+  bookingReceiptUrl,
   dispatchBookingMail,
   fail,
   equals,
@@ -24,10 +25,11 @@ import {
   reissueBookingContract,
   reopenBooking,
   bookingOverview,
-  bookingContractStatus,
+  bookingStage,
   isCurrentBookingMail,
   confirmBooking,
   markBookingsPaid,
+  resolveBookingException,
   paidSchema,
 } from "@/lib/bookings";
 import { date, today, type Workspace } from "@/lib/model";
@@ -79,7 +81,7 @@ function nightResponse(
         attendanceNote: b.attendanceNote,
         attendanceLocked:
           b.members.length > 0 && b.members.every((m) => m.paymentId),
-        contractStatus: bookingContractStatus(state, b),
+        workflowStatus: bookingStage(state, b).label,
         members: b.members.map((m) => ({
           id: m.id,
           name: m.name,
@@ -130,12 +132,14 @@ const actionSchema = z.object({
     "createBooking",
     "ticketSales",
     "issueContracts",
+    "resolveException",
     "approve",
     "attendance",
     "attendanceDate",
     "paid",
     "link",
     "signingLink",
+    "receiptLink",
     "retry",
     "resendInvitation",
     "reissue",
@@ -260,6 +264,30 @@ export async function POST(req: Request) {
       if (!booking) throw Error("Booking not found.");
       return json({ link: "/b/" + bookingToken(booking.id) });
     }
+    if (input.action === "receiptLink") {
+      const { mailId } = z.object({ mailId: z.string() }).parse(input.data);
+      const mail = state.bookingMail?.find(
+        (m) =>
+          m.id === mailId && m.kind === "receipt" && m.bookingId === input.id,
+      );
+      const contract =
+        mail &&
+        state.contracts?.find(
+          (c) =>
+            c.id === mail.id.slice(8) &&
+            c.bookingId === input.id &&
+            c.offer.organizerSignedAt &&
+            Date.parse(c.offer.organizerSignedAt) + 365 * 86400000 > Date.now(),
+        );
+      if (!contract)
+        throw new RequestError(
+          "No current copy is available for this email.",
+          404,
+        );
+      return json({
+        link: new URL(bookingReceiptUrl(contract.id)).pathname + "?receipt=1",
+      });
+    }
     if (input.action === "signingLink") {
       const memberId = z
         .object({ memberId: z.string().uuid() })
@@ -334,6 +362,11 @@ export async function POST(req: Request) {
       );
     }
     const rowChecks = new Set<string>();
+    if (input.action === "resolveException") {
+      if (!input.id) throw new RequestError("Choose a booking.");
+      resolveBookingException(state, input.id, input.data);
+      rowChecks.add(input.id);
+    }
     if (input.action === "attendanceDate") {
       const value = z
         .object({

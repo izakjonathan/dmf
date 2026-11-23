@@ -20,7 +20,7 @@ type Act = Pick<
   | "sourceError"
 > & {
   attendanceLocked: boolean;
-  contractStatus: string;
+  workflowStatus: string;
   members: Pick<Booking["members"][number], "id" | "name" | "attendance">[];
 };
 type Night = { staff: { day: string; name: string }; bookings: Act[] };
@@ -149,7 +149,7 @@ export default function NightShift({ token }: { token: string }) {
                 ) : (
                   <p>Schedule pending</p>
                 )}
-                <p className="fine">{act.contractStatus}</p>
+                <p className="fine">{act.workflowStatus}</p>
                 {act.performance?.requests && (
                   <p className="fine">{act.performance.requests}</p>
                 )}

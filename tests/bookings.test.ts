@@ -4,6 +4,10 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import {
   approveBooking,
+  bookingStage,
+  countersignBooking,
+  issueBookingContracts,
+  resolveBookingException,
   bookingContractStatus,
   reopenBooking,
   confirmBooking,
@@ -950,7 +954,9 @@ test("sheet approval guard rejects live row changes, reordered columns and dupli
     context,
   );
   const matches = () =>
-    runInNewContext(script + "\nsheetBookingMatches(book,state,id)", { ...context });
+    runInNewContext(script + "\nsheetBookingMatches(book,state,id)", {
+      ...context,
+    });
   assert.equal(matches(), true);
   row[4] = 200;
   assert.equal(matches(), true);
@@ -1012,4 +1018,60 @@ test("payment gate and sheet projection agree when the booking needs reconciliat
   });
   assert.equal(exportStatus(), "Manual payment needs reconciliation");
   assert.equal(exportStatus(), pendingReason(state, booking, member));
+});
+
+test("an absent performer cannot block a signed colleague or receive their payment", () => {
+  const { state, booking } = fixture();
+  booking.artistFirst = true;
+  issueBookingContracts(state, booking, booking, (id) => ({
+    hash: id,
+    url: id,
+  }));
+  sign(state, booking);
+  assert.equal(bookingStage(state, booking).action, "confirm");
+  confirmBooking(state, booking.id, {
+    by: "Staff",
+    note: "Second musician absent",
+    members: booking.members.map((m, i) => ({
+      id: m.id,
+      status: i ? "absent" : "played",
+    })),
+  });
+  assert.equal(bookingStage(state, booking).action, "sign");
+  countersignBooking(state, booking, "Owner", (id) => id);
+  assert.equal(
+    state.bookingMail!.filter((m) => m.kind === "receipt").length,
+    1,
+  );
+  assert.equal(bookingStage(state, booking).action, "pay");
+  markBookingsPaid(state, {
+    by: "Owner",
+    paidOn: today(),
+    members: [{ bookingId: booking.id, memberId: booking.members[0].id }],
+  });
+  assert.equal(bookingStage(state, booking).label, "Needs attention");
+  resolveBookingException(state, booking.id, {
+    memberId: booking.members[1].id,
+    by: "Owner",
+    reason: "Handled separately",
+    accepted: true,
+  });
+  const stage = bookingStage(state, booking);
+  assert.equal(stage.label, "Complete");
+  assert.equal(booking.members[1].paymentId, undefined);
+  assert.equal(
+    state.contracts!.filter((c) => c.offer.organizerSignedAt).length,
+    1,
+  );
+  const sandbox = {
+    state,
+    booking,
+    Utilities: { formatDate: () => today() },
+    result: "",
+  };
+  runInNewContext(
+    script + "\nresult = JSON.stringify(bookingStage(state, booking));",
+    sandbox,
+  );
+  assert.deepEqual(JSON.parse(sandbox.result), stage);
 });

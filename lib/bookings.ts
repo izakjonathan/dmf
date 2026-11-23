@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { deriveBookingStage } from "./booking-stage.ts";
 import {
   artistPerformanceSchema,
   date,
@@ -28,6 +29,7 @@ export type BookingMember = {
   >;
   attendance?: "played" | "absent" | "issue";
   paymentId?: string;
+  exceptionResolution?: { reason: string; by: string; at: string };
 };
 export type Booking = {
   id: string;
@@ -122,10 +124,15 @@ export function pendingReason(
   booking: Booking,
   member: BookingMember,
 ) {
-  if (state.payments.some((p) => p.id === member.paymentId && !p.voidReason))
+  if (
+    (state.payments || []).some(
+      (p) => p.id === member.paymentId && !p.voidReason,
+    )
+  )
     return "Paid";
   if (booking.cancelled) return "Cancelled";
   if (booking.sourceError) return "Booking sheet needs attention";
+  if (member.exceptionResolution) return "Exception resolved";
   if (booking.confirmedAt && member.attendance === "absent")
     return "Artist absent";
   if (booking.artistFirst && booking.contractsVersion !== booking.version)
@@ -389,7 +396,10 @@ export function reopenBooking(state: Workspace, id: string, input: unknown) {
   booking.approvedAt = undefined;
   booking.approvedBy = undefined;
   booking.correction = { reason, at: new Date().toISOString() };
-  for (const member of booking.members) member.contractId = undefined;
+  for (const member of booking.members) {
+    member.contractId = undefined;
+    member.exceptionResolution = undefined;
+  }
   for (const invite of state.invites)
     if (invite.bookingId === id && !invite.signedAt) invite.revoked = true;
   for (const mail of state.bookingMail || [])
@@ -441,6 +451,19 @@ export function confirmBooking(state: Workspace, id: string, input: unknown) {
     )
   )
     throw Error("Attendance for a paid musician cannot be changed.");
+  if (
+    booking.members.some(
+      (member) =>
+        (member.exceptionResolution ||
+          (booking.artistFirst &&
+            booking.approvedVersion === booking.version)) &&
+        value.members.find((m) => m.id === member.id)?.status !==
+          member.attendance,
+    )
+  )
+    throw Error(
+      "Attendance is locked after exception resolution or venue signature.",
+    );
   for (const member of booking.members)
     member.attendance = value.members.find((m) => m.id === member.id)!.status;
   booking.confirmedAt = new Date().toISOString();
@@ -571,6 +594,7 @@ export function bookingOverview(state: Workspace) {
   return (state.bookings || []).map((booking) => ({
     ...booking,
     contractStatus: bookingContractStatus(state, booking),
+    workflow: bookingStage(state, booking),
     members: booking.members.map(
       ({ payout: _payout, performer: _performer, ...member }) => {
         const payment = state.payments.find(
@@ -673,11 +697,10 @@ export function contractsForCountersign(state: Workspace, booking: Booking) {
     throw Error("Confirm the performance before signing for the venue.");
   if (booking.contractsVersion !== booking.version)
     throw Error("Issue the current contracts first.");
-  if (booking.members.some((member) => member.attendance !== "played"))
-    throw Error(
-      "Resolve the performance exceptions before signing this booking.",
-    );
-  const contracts = booking.members.map((member) =>
+  const played = booking.members.filter(
+    (member) => member.attendance === "played",
+  );
+  const contracts = played.map((member) =>
     state.contracts?.find(
       (contract) =>
         contract.id === member.contractId &&
@@ -685,11 +708,13 @@ export function contractsForCountersign(state: Workspace, booking: Booking) {
     ),
   );
   if (
-    contracts.length !== booking.expectedMembers ||
+    booking.members.length !== booking.expectedMembers ||
     !contracts.length ||
     contracts.some((contract) => !contract)
   )
-    throw Error("Every musician must sign before the venue can countersign.");
+    throw Error(
+      "Every musician who performed must sign before the venue can countersign.",
+    );
   return contracts.filter((contract) => contract !== undefined);
 }
 
@@ -713,4 +738,106 @@ export function countersignBooking(
   booking.approvedVersion = booking.version;
   booking.approvedBy = signer;
   booking.approvedAt = at;
+}
+
+export function bookingStage(state: Workspace, booking: Booking) {
+  const mail = (state.bookingMail || []).filter(
+    (m) => m.bookingId === booking.id && isCurrentBookingMail(m, booking),
+  );
+  const issue = mail.find(
+    (m) =>
+      ["invitation", "contract", "receipt"].includes(m.kind) &&
+      ["pending", "failed", "uncertain"].includes(m.status) &&
+      (m.error || m.status !== "pending") &&
+      (m.kind !== "contract" ||
+        booking.members.some(
+          (member) =>
+            !member.exceptionResolution &&
+            (!booking.confirmedAt || member.attendance === "played") &&
+            m.id === "contract:" + member.contractId &&
+            !state.contracts?.some((c) => c.id === member.contractId),
+        )),
+  );
+  const targets =
+    booking.artistFirst && booking.confirmedAt
+      ? booking.members.filter((member) => member.attendance === "played")
+      : booking.members;
+  const paymentStates = booking.members.map((member) =>
+    pendingReason(state, booking, member),
+  );
+  const expiredRequest = targets.some((member) =>
+    state.invites.some(
+      (invite) =>
+        invite.id === member.contractId &&
+        !invite.signedAt &&
+        (invite.revoked || (invite.offer && invite.offer.returnBy < today())),
+    ),
+  );
+  return deriveBookingStage({
+    cancelled: Boolean(booking.cancelled),
+    sourceError: booking.sourceError,
+    mailIssue:
+      issue?.error ||
+      (issue ? "Check " + issue.kind + " delivery." : undefined) ||
+      (expiredRequest
+        ? "A signing link has expired or been revoked."
+        : undefined),
+    invited: mail.some((m) => m.kind === "invitation" && m.status === "sent"),
+    registered: booking.members.length,
+    expected: booking.expectedMembers,
+    scheduled: Boolean(booking.performance),
+    fee: booking.fee,
+    issued: bookingRegistrationClosed(booking),
+    signed: targets.filter((member) =>
+      state.contracts?.some(
+        (c) =>
+          c.id === member.contractId && c.bookingVersion === booking.version,
+      ),
+    ).length,
+    signatureTarget: targets.length,
+    legacyApproval:
+      !booking.artistFirst && booking.approvedVersion !== booking.version,
+    venueSigned:
+      booking.approvedVersion === booking.version ||
+      (Boolean(booking.confirmedAt) && targets.length === 0),
+    confirmed: Boolean(booking.confirmedAt),
+    canConfirm: booking.date <= today(),
+    paymentStates,
+  });
+}
+
+export function resolveBookingException(
+  state: Workspace,
+  id: string,
+  input: unknown,
+) {
+  const booking = activeBooking(state, id);
+  if (booking.sourceError || !booking.confirmedAt || !booking.artistFirst)
+    throw Error(
+      "Confirm attendance for this booking before resolving an exception.",
+    );
+  const value = z
+    .object({
+      memberId: z.string().uuid(),
+      by: z.string().trim().min(2).max(300),
+      reason: z.string().trim().min(5).max(1000),
+      accepted: z.literal(true),
+    })
+    .parse(input);
+  const member = booking.members.find((item) => item.id === value.memberId);
+  if (
+    !member ||
+    (member.attendance !== "absent" && member.attendance !== "issue") ||
+    member.paymentId
+  )
+    throw Error("Only an unresolved performance exception can be closed here.");
+  if (member.exceptionResolution) return;
+  member.exceptionResolution = {
+    reason: value.reason,
+    by: value.by,
+    at: new Date().toISOString(),
+  };
+  for (const invite of state.invites)
+    if (invite.id === member.contractId && !invite.signedAt)
+      invite.revoked = true;
 }

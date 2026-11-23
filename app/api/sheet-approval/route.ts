@@ -107,12 +107,16 @@ function reviewBooking(state: Workspace, id: string) {
     dueOn: booking.dueOn,
     returnBy: signingDeadline(booking.date),
     organizer: venueSchema.parse(state.venue),
-    members: booking.members.map((member) => ({
-      id: member.id,
-      name: member.name,
-      email: member.email,
-      method: member.paymentType || booking.paymentType,
-    })),
+    members: booking.members
+      .filter(
+        (member) => !booking.artistFirst || member.attendance === "played",
+      )
+      .map((member) => ({
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        method: member.paymentType || booking.paymentType,
+      })),
     template: contracts?.[0]?.offer.template ?? dmfTemplate,
     countersign: Boolean(booking.artistFirst),
     terms: contracts?.map((contract) => ({
@@ -318,10 +322,15 @@ export async function POST(req: Request) {
       legacy ? undefined : { sheetBookingId: booking.id },
     );
     const ids = new Set(
-      booking.members.map(
-        (member) =>
-          (booking.artistFirst ? "receipt:" : "contract:") + member.contractId,
-      ),
+      booking.members
+        .filter(
+          (member) => !booking.artistFirst || member.attendance === "played",
+        )
+        .map(
+          (member) =>
+            (booking.artistFirst ? "receipt:" : "contract:") +
+            member.contractId,
+        ),
     );
     try {
       const result = await dispatchBookingMail();

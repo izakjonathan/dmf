@@ -39,7 +39,7 @@ function doPost(event) {
     lock = LockService.getScriptLock();
     if (!lock.tryLock(10000)) {
       console.warn("Stagebook could not acquire the workbook lock.");
-      return respond({ok:false});
+      return respond({ok:false,error:"BUSY"});
     }
     step = "opening the workbook";
     const book = SpreadsheetApp.openById(props.getProperty("SPREADSHEET_ID"));
@@ -105,7 +105,7 @@ function doPost(event) {
       try { quota = MailApp.getRemainingDailyQuota(); } catch (error) { console.warn("Stagebook mail quota unavailable."); }
       let handlers = [];
       try { handlers = ScriptApp.getProjectTriggers().map(trigger=>trigger.getHandlerFunction()); } catch (error) { console.warn("Stagebook triggers unavailable."); }
-      return respond({ok:true,version:"booking-workflow-2",quota,scheduled:handlers.includes("runBookingAutomation"),onEdit:handlers.includes("bookingSheetEdited")});
+      return respond({ok:true,version:"booking-workflow-3",quota,scheduled:handlers.includes("runBookingAutomation"),onEdit:handlers.includes("bookingSheetEdited")});
     }
     if (request.action === "metadata") return respond({ok:true,initialized:Boolean(state?.auth)});
     if (request.action === "read") return respond({ok:true,state:state});
@@ -269,14 +269,7 @@ function rowsFor(state) {
     bookingMembers.push([b.id,b.date,b.act,m.musicianId,m.name,m.email,m.contractId || "",m.attendance || "",m.paymentId || "",b.approvedBy || "",b.confirmedBy || "",b.confirmedAt || "",b.attendanceNote || ""]);
     const contract = (state.contracts || []).find(c=>c.id===m.contractId && c.bookingVersion===b.version);
     const payment = (state.payments || []).find(p=>p.id===m.paymentId && !p.voidReason);
-    const manualPayment = (state.payments || []).some(p=>!p.bookingId && !p.voidReason && p.kind==="Payment" &&
-      p.musicianId===m.musicianId && p.performedOn===b.date && normalizeBand(p.band)===normalizeBand(b.act));
-    const status = payment ? "Paid" : b.cancelled ? "Cancelled" : b.sourceError ? "Booking sheet needs attention" :
-      b.confirmedAt && m.attendance==="absent" ? "Artist absent" :
-      b.artistFirst && b.contractsVersion!==b.version ? "Registration or contract details needed" :
-      !b.artistFirst && b.approvedVersion!==b.version ? "Company approval needed" :
-      !contract ? "Artist signature needed" : !b.confirmedAt ? "Performance confirmation needed" :
-      !m.attendance ? "Attendance not recorded" : m.attendance!=="played" ? "Performance issue" : !contract.offer.organizerSignedAt ? "Venue signature needed" : manualPayment ? "Manual payment needs reconciliation" : "Ready to pay";
+    const status = pendingReason(state,b,m);
     bookingPayments.push([b.id,b.date,b.act,m.name,m.email,(payment?.amount ?? contract?.offer.fee ?? b.fee)/100,
       payment?.paymentType || contract?.offer.paymentType || m.paymentType || b.paymentType,b.dueOn,status,payment?.id || ""]);
   }
@@ -858,6 +851,7 @@ function syncBookingRows(book,state,props) {
         if (attendanceChanged) Object.assign(booking,{confirmedAt:undefined,confirmedBy:undefined,attendanceNote:undefined});
         for (const member of booking.members) {
           member.contractId = undefined;
+          member.exceptionResolution = undefined;
           if (attendanceChanged) member.attendance = undefined;
         }
         for (const invite of state.invites) if (invite.bookingId === id && !invite.signedAt) invite.revoked = true;
@@ -866,7 +860,11 @@ function syncBookingRows(book,state,props) {
         }
       }
     } else { booking.sourceError = undefined; booking.sourceSignature = sourceSignature; }
-    if (booking.sourceError) { sheet.getRange(index+2,modern ? 28 : 14).setValue(booking.sourceError); return; }
+    if (booking.sourceError) {
+      sheet.getRange(index+2,modern ? 28 : 14).setValue(booking.sourceError);
+      sheet.getRange(index+2,modern ? 24 : 10).setValue("Booking sheet needs attention");
+      return;
+    }
     if (modern) {
       booking.operations = {ticketPrice:sourceRow[3],entranceIncome:sourceRow[4],guestCount:sourceRow[7],booker:sourceRow[11],infoSent:sourceRow[12],prReceived:sourceRow[13],facebook:sourceRow[14],website:sourceRow[15],winterJazz:sourceRow[16],instagram:sourceRow[17]};
     }
@@ -899,7 +897,10 @@ function syncBookingRows(book,state,props) {
     sheet.getRange(index+2,modern ? 24 : 10,1,5).setValues([[status,url,booking.performance ? booking.members.length+" / "+booking.expectedMembers : booking.members.length+" registered · lineup pending",
       bookingEmailStatus(state,booking),booking.sourceError || ""]]);
   });
-  if (modern) refreshBookingProjection(book,state);
+  if (modern) {
+    ensureBookingActionColumns(sheet);
+    refreshBookingProjection(book,state);
+  }
   for (const booking of state.bookings) if (!seen.has(booking.id)) {
     booking.sourceError = "The booking row is missing. Restore it in the sheet, or restore it and set Cancelled to Yes.";
   }
@@ -1063,10 +1064,29 @@ function refreshBookingProjection(book,state) {
   const sheet=book.getSheetByName("Bookings");
   if (!sheet || !modernBookingSheet(sheet) || sheet.getLastRow()<2) return;
   const workflow=bookingWorkflowEnabled(sheet);
+  const actions=workflow && sheet.getMaxColumns() >= 45 &&
+    sheet.getRange("AR1").getValue() === "Workflow status";
   const rows=sheet.getRange(2,1,sheet.getLastRow()-1,workflow ? 29+BOOKING_WORKFLOW_HEADERS.length : 28).getValues();
   rows.forEach((row,index)=>{
     const booking=(state.bookings || []).find(b=>b.id===String(row[22]));
     if (!booking) return;
+    if (actions) {
+      const stage = bookingStage(state,booking);
+      const next = {
+        confirm:["Confirm performance","booking"],
+        sign:["Review and sign","review"],
+        pay:["Mark paid","bookingPayments"],
+        issue:["Issue signing requests","booking"],
+        details:["Review issue","booking"]
+      }[stage.action];
+      const url = next ? "https://dmf-eta.vercel.app/?"+next[1]+"="+booking.id : "";
+      const label = stage.label+(stage.reason ? " · "+stage.reason : "");
+      sheet.getRange(index+2,44).setValue(label);
+      const cell = sheet.getRange(index+2,45);
+      if (url && /^[a-f0-9-]{36}$/i.test(booking.id))
+        cell.setRichTextValue(SpreadsheetApp.newRichTextValue().setText(next[0]).setLinkUrl(url).build());
+      else cell.clearContent();
+    }
     const paid=booking.members.length===booking.expectedMembers && booking.members.length>0 && booking.members.every(m=>m.paymentId && (state.payments || []).some(p=>p.id===m.paymentId && !p.voidReason));
     const total=booking.fee && (!booking.artistFirst || booking.performance) ?
       booking.fee*booking.expectedMembers/100 : "";
@@ -1099,4 +1119,172 @@ function refreshBookingProjection(book,state) {
       sheet.getRange(index+2,26).setValue(booking.performance ? booking.members.length+" / "+booking.expectedMembers : booking.members.length+" registered · lineup pending");
     }
   });
+}
+
+function ensureBookingActionColumns(sheet) {
+  if (!bookingWorkflowEnabled(sheet) || typeof sheet.getSheetId !== "function") return;
+  const width = sheet.getMaxColumns();
+  if (width < 45) sheet.insertColumnsAfter(width,45-width);
+  const headers = sheet.getRange(1,44,1,2);
+  const current = headers.getValues()[0];
+  if (current[0] === "Workflow status" && current[1] === "Next action") return;
+  if (current.some(Boolean) || (sheet.getLastRow() > 1 && !sheet.getRange(2,44,sheet.getLastRow()-1,2).isBlank()))
+    throw Error("Preserve the existing contents in AR:AS before adding workflow columns.");
+  headers.setValues([["Workflow status","Next action"]]).setFontWeight("bold");
+}
+
+// Shared booking workflow. Regenerate with npm run sync:booking-workflow.
+function today() { return Utilities.formatDate(new Date(),"Europe/Copenhagen","yyyy-MM-dd"); }
+function bookingRegistrationClosed(b) { return b.approvedVersion===b.version || b.contractsVersion===b.version; }
+function hasOtherPaymentPath(state,v,manual) { return (state.payments || []).some(p=>!p.voidReason && p.kind==="Payment" && Boolean(p.bookingId)===manual && p.musicianId===v.musicianId && p.performedOn===v.performedOn && normalizeBand(p.band)===normalizeBand(v.band)); }
+function deriveBookingStage(f) {
+    if (f.cancelled)
+        return { label: "Cancelled", action: "none" };
+    if (f.sourceError)
+        return {
+            label: "Needs attention",
+            action: "details",
+            reason: f.sourceError,
+        };
+    const complete = f.venueSigned &&
+        f.confirmed &&
+        f.paymentStates.length > 0 &&
+        f.paymentStates.every((s) => s === "Paid" || s === "Exception resolved");
+    if (complete && !f.mailIssue)
+        return { label: "Complete", action: "none" };
+    if (!f.scheduled || f.registered !== f.expected) {
+        if (f.mailIssue)
+            return {
+                label: "Needs attention",
+                action: "details",
+                reason: f.mailIssue,
+            };
+        return {
+            label: f.invited ? "Waiting for registrations" : "Booked",
+            action: "none",
+        };
+    }
+    if (!f.fee)
+        return {
+            label: "Needs attention",
+            action: "details",
+            reason: "Enter the agreed fee.",
+        };
+    if (f.legacyApproval)
+        return { label: "Ready to sign", action: "sign" };
+    if (!f.issued)
+        return {
+            label: "Needs attention",
+            action: "issue",
+            reason: "Signing requests need issuing.",
+        };
+    if (f.signed < f.signatureTarget) {
+        if (f.mailIssue)
+            return {
+                label: "Needs attention",
+                action: "details",
+                reason: f.mailIssue,
+            };
+        return { label: "Waiting for signatures", action: "none" };
+    }
+    if (!f.confirmed)
+        return {
+            label: f.canConfirm ? "Ready to confirm" : "Booked",
+            action: f.canConfirm ? "confirm" : "none",
+            reason: f.canConfirm
+                ? undefined
+                : "Performance is confirmed on or after the booking date.",
+        };
+    if (!f.venueSigned && f.signatureTarget > 0)
+        return { label: "Ready to sign", action: "sign" };
+    if (f.paymentStates.includes("Ready to pay"))
+        return { label: "Ready to pay", action: "pay" };
+    if (f.mailIssue)
+        return {
+            label: "Needs attention",
+            action: "details",
+            reason: f.mailIssue,
+        };
+    if (complete)
+        return { label: "Complete", action: "none" };
+    return {
+        label: "Needs attention",
+        action: "details",
+        reason: f.paymentStates.find((s) => !["Paid", "Exception resolved"].includes(s)) || "Review the performance exception.",
+    };
+}
+function pendingReason(state, booking, member) {
+    if ((state.payments || []).some((p) => p.id === member.paymentId && !p.voidReason))
+        return "Paid";
+    if (booking.cancelled)
+        return "Cancelled";
+    if (booking.sourceError)
+        return "Booking sheet needs attention";
+    if (member.exceptionResolution)
+        return "Exception resolved";
+    if (booking.confirmedAt && member.attendance === "absent")
+        return "Artist absent";
+    if (booking.artistFirst && booking.contractsVersion !== booking.version)
+        return "Registration or contract details needed";
+    if (!booking.artistFirst && booking.approvedVersion !== booking.version)
+        return "Company approval needed";
+    const contract = state.contracts?.find((item) => item.id === member.contractId && item.bookingVersion === booking.version);
+    if (!contract)
+        return "Artist signature needed";
+    if (!booking.confirmedAt)
+        return "Performance confirmation needed";
+    if (!member.attendance)
+        return "Attendance not recorded";
+    if (member.attendance !== "played")
+        return "Performance issue";
+    if (!contract.offer.organizerSignedAt)
+        return "Venue signature needed";
+    if (hasOtherPaymentPath(state, {
+        musicianId: member.musicianId,
+        performedOn: booking.date,
+        band: booking.act,
+    }, false))
+        return "Manual payment needs reconciliation";
+    return "Ready to pay";
+}
+function bookingStage(state, booking) {
+    const mail = (state.bookingMail || []).filter((m) => m.bookingId === booking.id && currentBookingMail(m, booking));
+    const issue = mail.find((m) => ["invitation", "contract", "receipt"].includes(m.kind) &&
+        ["pending", "failed", "uncertain"].includes(m.status) &&
+        (m.error || m.status !== "pending") &&
+        (m.kind !== "contract" ||
+            booking.members.some((member) => !member.exceptionResolution &&
+                (!booking.confirmedAt || member.attendance === "played") &&
+                m.id === "contract:" + member.contractId &&
+                !state.contracts?.some((c) => c.id === member.contractId))));
+    const targets = booking.artistFirst && booking.confirmedAt
+        ? booking.members.filter((member) => member.attendance === "played")
+        : booking.members;
+    const paymentStates = booking.members.map((member) => pendingReason(state, booking, member));
+    const expiredRequest = targets.some((member) => state.invites.some((invite) => invite.id === member.contractId &&
+        !invite.signedAt &&
+        (invite.revoked || (invite.offer && invite.offer.returnBy < today()))));
+    return deriveBookingStage({
+        cancelled: Boolean(booking.cancelled),
+        sourceError: booking.sourceError,
+        mailIssue: issue?.error ||
+            (issue ? "Check " + issue.kind + " delivery." : undefined) ||
+            (expiredRequest
+                ? "A signing link has expired or been revoked."
+                : undefined),
+        invited: mail.some((m) => m.kind === "invitation" && m.status === "sent"),
+        registered: booking.members.length,
+        expected: booking.expectedMembers,
+        scheduled: Boolean(booking.performance),
+        fee: booking.fee,
+        issued: bookingRegistrationClosed(booking),
+        signed: targets.filter((member) => state.contracts?.some((c) => c.id === member.contractId && c.bookingVersion === booking.version)).length,
+        signatureTarget: targets.length,
+        legacyApproval: !booking.artistFirst && booking.approvedVersion !== booking.version,
+        venueSigned: booking.approvedVersion === booking.version ||
+            (Boolean(booking.confirmedAt) && targets.length === 0),
+        confirmed: Boolean(booking.confirmedAt),
+        canConfirm: booking.date <= today(),
+        paymentStates,
+    });
 }

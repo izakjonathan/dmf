@@ -66,15 +66,8 @@ type Modal =
   | { kind: "contract"; contract: SignedContract }
   | { kind: "musician"; profile: Musician; collectCpr: boolean }
   | { kind: "void"; payment: Payment };
-const pages: Page[] = [
-  "Bookings",
-  "Overview",
-  "Musicians",
-  "Payments",
-  "Reports",
-  "Venue",
-  "Contracts",
-];
+const pages: Page[] = ["Bookings", "Payments", "Contracts"];
+const adminPages: Page[] = ["Overview", "Musicians", "Reports", "Venue"];
 function fields(event: FormEvent<HTMLFormElement>) {
   event.preventDefault();
   return Object.fromEntries(new FormData(event.currentTarget));
@@ -187,6 +180,7 @@ export default function Dashboard() {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     setReviewId(params.get("review") || "");
+    if (params.has("review")) setPage("Contracts");
     const paymentBooking = params.get("bookingPayments");
     setFocusBooking(paymentBooking || params.get("booking") || "");
     if (paymentBooking) setPage("Payments");
@@ -539,6 +533,18 @@ export default function Dashboard() {
                   {item}
                 </button>
               ))}
+              <details>
+                <summary>Administration</summary>
+                {adminPages.map((item) => (
+                  <button
+                    aria-current={page === item ? "page" : undefined}
+                    key={item}
+                    onClick={() => go(item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </details>
             </nav>
           </div>
         </div>
@@ -550,12 +556,8 @@ export default function Dashboard() {
               {error}
             </p>
           )}
-          {page === "Bookings" &&
-            (reviewId ? (
-              <BookingReview id={reviewId} />
-            ) : (
-              <Bookings focusBooking={focusBooking} />
-            ))}
+          {page === "Bookings" && <Bookings focusBooking={focusBooking} />}
+          {page === "Contracts" && reviewId && <BookingReview id={reviewId} />}
           {page === "Overview" && (
             <>
               <div className="stats">
@@ -672,7 +674,7 @@ export default function Dashboard() {
               save={(v) => void mutate("venue", v)}
             />
           )}
-          {page === "Contracts" && (
+          {page === "Contracts" && !reviewId && (
             <section className="panel guide">
               <Bookings contracts />
               <h2>Contract copies</h2>

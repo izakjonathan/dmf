@@ -97,6 +97,11 @@ export async function sheets(action: string, data: object = {}) {
       503,
     );
   const result = await response.json();
+  if (result.error === "BUSY")
+    throw new RequestError(
+      "Stagebook is syncing. Wait a moment, then try again.",
+      409,
+    );
   if (result.error === "CONFLICT")
     throw new RequestError(
       "The sheet has a newer change. Refresh and try again.",
