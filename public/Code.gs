@@ -1485,7 +1485,7 @@ function sensitiveStorage(props,create) {
   const book = SpreadsheetApp.openById(id);
   const owner = book.getOwner()?.getEmail();
   if (!owner || owner !== Session.getEffectiveUser().getEmail() ||
-      book.getEditors().some(user=>user.getEmail()!==owner) || book.getViewers().length)
+      book.getEditors().some(user=>user.getEmail()!==owner) || book.getViewers().some(user => user.getEmail() !== owner))
     throw Error("The sensitive workbook must be owned by the deployment owner and restricted.");
   let sheet = book.getSheetByName("Sensitive");
   if (!sheet && create) sheet = book.insertSheet("Sensitive");
@@ -1630,9 +1630,14 @@ function migrateStagebookSensitiveData() {
   if (!backupId || backupId===book.getId() || backupId===props.getProperty("SENSITIVE_SPREADSHEET_ID"))
     throw Error("Create a separate restricted backup and set SENSITIVE_BACKUP_ID.");
   const backup = SpreadsheetApp.openById(backupId);
-  if (backup.getOwner()?.getEmail()!==owner || !backup.getSheetByName("_Stagebook") ||
-      backup.getEditors().some(user=>user.getEmail()!==owner) || backup.getViewers().length)
-    throw Error("Use a restricted backup of the main workbook.");
+  if (backup.getOwner()?.getEmail() !== owner)
+    throw Error("Backup check failed: the backup owner does not match the main workbook owner.");
+  if (!backup.getSheetByName("_Stagebook"))
+    throw Error("Backup check failed: the _Stagebook tab is missing.");
+  if (backup.getEditors().some(user => user.getEmail() !== owner))
+    throw Error("Backup check failed: Apps Script reports an editor other than the owner.");
+  if (backup.getViewers().some(user => user.getEmail() !== owner))
+    throw Error("Backup check failed: Apps Script reports a viewer other than the owner.");
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
