@@ -1525,7 +1525,7 @@ function sensitiveView(book,state,request,props) {
     const fallback = target.payout || musician;
     const raw = ref ? sensitiveData(refs.has(ref) ? JSON.parse(refs.get(ref)) : null) : sensitiveData(fallback);
     if (!ref && (target.paymentType || musician?.preferredPaymentType)==="Mobilepay")
-      raw.mobilePayNumber ||= fallback?.phone || "";
+      raw.mobilePayNumber = raw.mobilePayNumber || fallback?.phone || "";
     return {id:target.id,...Object.fromEntries(SENSITIVE_FIELDS.map(key=>[key,reveal ? raw[key] : sensitiveMask(raw[key])]))};
   });
   if (reveal) {
@@ -1557,8 +1557,8 @@ function persistSensitive(state,props,migrating) {
       details.account = current.account || "";
       details.iban = current.iban || "";
     }
-    details.cpr ||= current.cpr || "";
-    if (method==="Mobilepay") details.mobilePayNumber ||= current.mobilePayNumber || "";
+    details.cpr = details.cpr || current.cpr || "";
+    if (method==="Mobilepay") details.mobilePayNumber = details.mobilePayNumber || current.mobilePayNumber || "";
     const payload = JSON.stringify(details);
     if (!Object.values(details).some(Boolean)) return undefined;
     if (records.get(prior)===payload) return prior;
@@ -1585,7 +1585,7 @@ function persistSensitive(state,props,migrating) {
     if (migrating && method==="Mobilepay") {
       const old = member.payout?.phone || member.performer?.phone;
       if (old) {
-        member.payout ||= {};
+        member.payout = member.payout || {};
         if (!member.payout.mobilePayNumber) member.payout.mobilePayNumber = old;
         if (member.performer?.phone===old) member.performer.phone = "";
         if (booking.contactPhone===old && booking.contactEmail===member.email) {
@@ -1598,7 +1598,7 @@ function persistSensitive(state,props,migrating) {
     }
     if (rawPresent(member.payout))
       member.sensitiveRef = keep(member.payout,member.musicianId,member.sensitiveRef || profile?.sensitiveRef,method);
-    else if (migrating || !member.sensitiveRef) member.sensitiveRef ||= profile?.sensitiveRef;
+    else if (migrating || !member.sensitiveRef) member.sensitiveRef = member.sensitiveRef || profile?.sensitiveRef;
     if (member.payout) {
       for (const key of SENSITIVE_FIELDS) delete member.payout[key];
       delete member.payout.phone;
