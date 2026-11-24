@@ -10,6 +10,14 @@ import {
 import { bookingOverview, signingDeadline, type Booking } from "@/lib/bookings";
 import { AttendanceEditor } from "./AttendanceEditor";
 import { money, tariffWarning, today } from "@/lib/model";
+const dateHeading = new Intl.DateTimeFormat("en-GB", {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
 function bookingDate(date: string) {
   const [year, month, day] = date.split("-");
   return `${day}/${month}/${year}`;
@@ -338,7 +346,7 @@ export default function Bookings({
     if (action === "confirm")
       return (
         <form
-          className="row"
+          className="booking-confirm-form"
           onSubmit={(event) => {
             const fields = values(event);
             void act("attendance", booking.id, {
@@ -383,7 +391,11 @@ export default function Bookings({
   }
   return (
     <section
-      className="booking-workspace"
+      className={
+        payments || contracts
+          ? "booking-workspace"
+          : "booking-workspace bookings-screen"
+      }
       aria-label={payments ? "Pending payments" : "Bookings"}
     >
       {error && (
@@ -446,161 +458,220 @@ export default function Bookings({
         </>
       ) : !payments ? (
         <>
-          <details
-            className="panel booking-form"
-            hidden={Boolean(focusBooking)}
-          >
-            <summary>New booking</summary>
-            <form
-              onSubmit={(event) => {
-                const form = event.currentTarget;
-                const fields = values(event);
-                bookingRequest.current ||= crypto.randomUUID();
-                void act("createBooking", undefined, {
-                  ...fields,
-                  requestId: bookingRequest.current,
-                  fee: Math.round(Number(fields.fee) * 100),
-                  ticketPrice: Math.round(Number(fields.ticketPrice) * 100),
-                }).then((saved) => {
-                  if (saved) {
-                    form.reset();
-                    setFeeDraft({ date: "", fee: 0 });
-                  }
-                });
-              }}
-            >
-              <div className="grid">
-                <label>
-                  Performance date
-                  <input
-                    name="date"
-                    type="date"
-                    required
-                    onChange={(event) =>
-                      setFeeDraft({
-                        ...feeDraft,
-                        date: event.currentTarget.value,
-                      })
+          <div className="booking-actions" hidden={Boolean(focusBooking)}>
+            <details className="booking-create">
+              <summary className="button">
+                <span aria-hidden="true">+</span> New booking
+              </summary>
+              <form
+                onSubmit={(event) => {
+                  const form = event.currentTarget;
+                  const fields = values(event);
+                  bookingRequest.current ||= crypto.randomUUID();
+                  void act("createBooking", undefined, {
+                    ...fields,
+                    requestId: bookingRequest.current,
+                    fee: Math.round(Number(fields.fee) * 100),
+                    ticketPrice: Math.round(Number(fields.ticketPrice) * 100),
+                  }).then((saved) => {
+                    if (saved) {
+                      form.reset();
+                      const disclosure = form.closest("details");
+                      if (disclosure) disclosure.open = false;
+                      setFeeDraft({ date: "", fee: 0 });
                     }
-                  />
-                </label>
-                <label>
-                  Artist or band
-                  <input name="act" required maxLength={300} />
-                </label>
-                <label>
-                  Contact name
-                  <input name="contactName" required maxLength={300} />
-                </label>
-                <label>
-                  Contact email
-                  <input
-                    name="contactEmail"
-                    type="email"
-                    required
-                    maxLength={254}
-                  />
-                </label>
-                <label>
-                  Contact phone (optional)
-                  <input name="contactPhone" type="tel" maxLength={50} />
-                </label>
-                <label>
-                  Responsible booker
-                  <input name="booker" required maxLength={300} />
-                </label>
-                <label>
-                  Fee per musician (DKK)
-                  <input
-                    name="fee"
-                    onChange={(event) =>
-                      setFeeDraft({
-                        ...feeDraft,
-                        fee: Math.round(
-                          event.currentTarget.valueAsNumber * 100,
-                        ),
-                      })
-                    }
-                    type="number"
-                    min="0.01"
-                    max={1000000}
-                    step="0.01"
-                    required
-                  />
-                </label>
-                <label>
-                  Ticket price (DKK)
-                  <input
-                    name="ticketPrice"
-                    type="number"
-                    min="0"
-                    max={1000000}
-                    step="0.01"
-                    required
-                  />
-                </label>
-              </div>
-              {feeWarning && (
-                <p role="status" className="fine">
-                  {feeWarning}
-                </p>
-              )}
-              <button disabled={busy}>Save booking</button>
-            </form>
-          </details>
-          <div className="row booking-toolbar">
-            <button
-              className="link"
-              onClick={() => void load()}
-              disabled={busy}
-            >
-              Refresh
-            </button>
-            {updated && <small className="fine">Updated {updated}</small>}
-            {days.includes(today()) && selectedDate !== today() && (
-              <button className="secondary" onClick={() => chooseDate(today())}>
-                Tonight
-              </button>
-            )}
-            <button
-              className="link"
-              onClick={() => setManagement(!management)}
-              aria-pressed={management}
-            >
-              {management ? "Night view" : "Manage bookings"}
-            </button>
-            {management && (
-              <button
-                className="secondary"
-                disabled={busy}
-                onClick={() => void act("sync")}
-              >
-                {busy ? "Updating…" : "Update bookings"}
-              </button>
-            )}
-            {management && sheet && (
-              <a className="link" href={sheet} target="_blank" rel="noreferrer">
-                Open booking sheet
-              </a>
-            )}
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={past}
-                onChange={(e) => {
-                  setPast(e.target.checked);
-                  chooseDate("");
+                  });
                 }}
-              />
-              Past dates
-            </label>
+              >
+                <div className="grid">
+                  <label>
+                    Performance date
+                    <input
+                      name="date"
+                      type="date"
+                      required
+                      onChange={(event) =>
+                        setFeeDraft({
+                          ...feeDraft,
+                          date: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Artist or band
+                    <input name="act" required maxLength={300} />
+                  </label>
+                  <label>
+                    Contact name
+                    <input name="contactName" required maxLength={300} />
+                  </label>
+                  <label>
+                    Contact email
+                    <input
+                      name="contactEmail"
+                      type="email"
+                      required
+                      maxLength={254}
+                    />
+                  </label>
+                  <label>
+                    Contact phone (optional)
+                    <input name="contactPhone" type="tel" maxLength={50} />
+                  </label>
+                  <label>
+                    Responsible booker
+                    <input name="booker" required maxLength={300} />
+                  </label>
+                  <label>
+                    Fee per musician (DKK)
+                    <input
+                      name="fee"
+                      onChange={(event) =>
+                        setFeeDraft({
+                          ...feeDraft,
+                          fee: Math.round(
+                            event.currentTarget.valueAsNumber * 100,
+                          ),
+                        })
+                      }
+                      type="number"
+                      min="0.01"
+                      max={1000000}
+                      step="0.01"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Ticket price (DKK)
+                    <input
+                      name="ticketPrice"
+                      type="number"
+                      min="0"
+                      max={1000000}
+                      step="0.01"
+                      required
+                    />
+                  </label>
+                </div>
+                {feeWarning && (
+                  <p role="status" className="fine">
+                    {feeWarning}
+                  </p>
+                )}
+                <button disabled={busy}>Save booking</button>
+              </form>
+            </details>
+            <button
+              type="button"
+              className="secondary booking-options-toggle"
+              popoverTarget="booking-options"
+              aria-haspopup="true"
+            >
+              Options <span aria-hidden="true">···</span>
+            </button>
+            <div
+              id="booking-options"
+              className="booking-options"
+              popover="auto"
+            >
+              <button
+                type="button"
+                popoverTarget="booking-options"
+                popoverTargetAction="hide"
+                onClick={() => void load()}
+                disabled={busy}
+              >
+                Refresh view
+              </button>
+              <button
+                type="button"
+                popoverTarget="booking-options"
+                popoverTargetAction="hide"
+                onClick={() => void act("sync")}
+                disabled={busy}
+              >
+                Sync from Google Sheet
+              </button>
+              {sheet && (
+                <a href={sheet} target="_blank" rel="noreferrer">
+                  Open booking sheet
+                </a>
+              )}
+              {updated && <small>Updated {updated}</small>}
+            </div>
           </div>
+          {!focusBooking && (
+            <div className="booking-toolbar">
+              {selectedDate ? (
+                <div
+                  className="booking-segments"
+                  role="group"
+                  aria-label="Booking view"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={management}
+                    onClick={() => setManagement(true)}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={!management}
+                    onClick={() => setManagement(false)}
+                  >
+                    Night view
+                  </button>
+                </div>
+              ) : (
+                <div
+                  className="booking-segments"
+                  role="group"
+                  aria-label="Date range"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={!past}
+                    onClick={() => setPast(false)}
+                  >
+                    Upcoming
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={past}
+                    onClick={() => setPast(true)}
+                  >
+                    Past dates
+                  </button>
+                </div>
+              )}
+              {bookings.some((booking) => booking.date === today()) &&
+                selectedDate !== today() && (
+                  <button
+                    type="button"
+                    className="secondary booking-tonight"
+                    onClick={() => {
+                      setPast(false);
+                      chooseDate(today());
+                    }}
+                  >
+                    Tonight
+                  </button>
+                )}
+            </div>
+          )}
           {loaded && !bookings.length && (
             <p className="panel">
               Add dates, act names, contact emails and musician counts to the
               Bookings tab in your Google Sheet, then update bookings.
               Invitations and reminders run automatically once booking
               automation is enabled.
+            </p>
+          )}
+          {loaded && bookings.length > 0 && !selectedDate && !days.length && (
+            <p className="panel">
+              {past ? "No past bookings." : "No upcoming bookings."}
             </p>
           )}
           {!selectedDate ? (
@@ -618,11 +689,7 @@ export default function Bookings({
                         <strong>{bookingDate(date)}</strong>
                         <span className="booking-day-acts">
                           {acts.map((b) => (
-                            <span key={b.id}>
-                              {b.act}
-                              {" · "}
-                              {b.workflow.label}
-                            </span>
+                            <span key={b.id}>{b.act}</span>
                           ))}
                         </span>
                       </span>
@@ -640,70 +707,32 @@ export default function Bookings({
           ) : (
             <>
               <section className="booking-day-card is-expanded">
-                <button
-                  className="booking-day-summary"
-                  disabled={Boolean(focusBooking)}
-                  aria-expanded={true}
-                  onClick={() => chooseDate("")}
-                >
-                  <span>
-                    <strong>{bookingDate(selectedDate)}</strong>
-                    <small className="booking-day-caption">
-                      {dated.length} {dated.length === 1 ? "act" : "acts"} ·{" "}
-                      {management ? "Booking overview" : "Night overview"}
-                    </small>
-                  </span>
-                  <span className="card-chevron" aria-hidden="true" />
-                </button>
+                <div className="booking-date-heading">
+                  {!focusBooking && (
+                    <button
+                      type="button"
+                      className="secondary booking-date-back"
+                      onClick={() => chooseDate("")}
+                    >
+                      <span aria-hidden="true">←</span> All dates
+                    </button>
+                  )}
+                  <div>
+                    <h2>
+                      <time dateTime={selectedDate}>
+                        {dateHeading.format(
+                          new Date(selectedDate + "T00:00:00Z"),
+                        )}
+                      </time>
+                    </h2>
+                    <p>
+                      {dated.length} {dated.length === 1 ? "act" : "acts"}
+                    </p>
+                  </div>
+                </div>
                 <div className="booking-day-body">
                   {management ? (
                     <>
-                      {!focusBooking && dated.some((b) => !b.cancelled) && (
-                        <details className="panel">
-                          <summary>Staff access for this night</summary>
-                          <form
-                            className="booking-form"
-                            onSubmit={(e) => {
-                              const fields = values(e);
-                              void act("staffLink", undefined, {
-                                day: selectedDate,
-                                name: fields.name,
-                              });
-                            }}
-                          >
-                            <p className="fine">
-                              Share a link for this date only. Creating a new
-                              link replaces the previous one. It expires the day
-                              after the performance, or the day after creation
-                              for past bookings.
-                            </p>
-                            <label>
-                              Staff member’s full name
-                              <input
-                                name="name"
-                                required
-                                minLength={2}
-                                maxLength={100}
-                              />
-                            </label>
-                            <div className="row">
-                              <button disabled={busy}>Copy staff link</button>
-                              <button
-                                type="button"
-                                className="secondary"
-                                disabled={busy}
-                                onClick={() =>
-                                  void act("revokeStaff", undefined, {
-                                    day: selectedDate,
-                                  })
-                                }
-                              >
-                                Revoke staff link
-                              </button>
-                            </div>
-                          </form>
-                        </details>
-                      )}
                       {!focusBooking &&
                         dated.length > 1 &&
                         dated.some((b) => !b.cancelled && !b.confirmedAt) &&
@@ -763,17 +792,55 @@ export default function Bookings({
                           className="booking-act booking-act-card"
                           key={booking.id}
                         >
-                          <div className="act-card-body">
-                            <h3>{booking.act}</h3>
-                            <p>
-                              <strong>{booking.workflow.label}</strong>
-                              {" · "}
-                              {booking.performance?.start || "Time pending"}
-                            </p>
-                            {booking.workflow.reason && (
-                              <p className="fine">{booking.workflow.reason}</p>
-                            )}
-                            {nextAction(booking)}
+                          <div className="booking-act-overview">
+                            <div className="booking-act-heading">
+                              <h3>{booking.act}</h3>
+                              <span
+                                className="booking-status"
+                                data-action={booking.workflow.action}
+                              >
+                                {booking.workflow.label}
+                              </span>
+                            </div>
+                            <dl className="booking-act-facts">
+                              <div>
+                                <dt>Set time</dt>
+                                <dd>
+                                  {booking.performance
+                                    ? `${booking.performance.start}–${booking.performance.end}`
+                                    : "Pending"}
+                                  {booking.performance &&
+                                    booking.performance.end <
+                                      booking.performance.start && (
+                                      <small>Ends next day</small>
+                                    )}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Lineup</dt>
+                                <dd>
+                                  {booking.members.length}/
+                                  {booking.expectedMembers}{" "}
+                                  <small>registered</small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Sets</dt>
+                                <dd>
+                                  {booking.performance
+                                    ? `${booking.performance.sets} × ${booking.performance.minutesPerSet} min`
+                                    : "Pending"}
+                                </dd>
+                              </div>
+                            </dl>
+                            <div className="booking-act-next">
+                              {booking.workflow.reason && (
+                                <p className="fine">
+                                  {booking.workflow.reason}
+                                </p>
+                              )}
+                              {nextAction(booking)}
+                            </div>
                           </div>
                           <details
                             className="booking-details"
@@ -785,7 +852,11 @@ export default function Bookings({
                             }
                           >
                             <summary className="act-card-summary">
-                              Details
+                              Booking details
+                              <span
+                                className="card-chevron"
+                                aria-hidden="true"
+                              />
                             </summary>
                             <div className="act-card-body">
                               <div className="section-title">
@@ -806,13 +877,7 @@ export default function Bookings({
                                   Copy private band contact link
                                 </button>
                               </div>
-                              <p>
-                                {booking.members.length}/
-                                {booking.expectedMembers} musicians registered ·{" "}
-                                {booking.cancelled
-                                  ? "Cancelled"
-                                  : booking.contractStatus}
-                              </p>
+                              <p className="fine">{booking.contractStatus}</p>
                               {booking.sourceError && (
                                 <p className="error">{booking.sourceError}</p>
                               )}
@@ -1297,6 +1362,52 @@ export default function Bookings({
                           </details>
                         </article>
                       ))}
+                      {!focusBooking && dated.some((b) => !b.cancelled) && (
+                        <details className="booking-staff-access">
+                          <summary>Staff access</summary>
+                          <form
+                            className="booking-form"
+                            onSubmit={(e) => {
+                              const fields = values(e);
+                              void act("staffLink", undefined, {
+                                day: selectedDate,
+                                name: fields.name,
+                              });
+                            }}
+                          >
+                            <p className="fine">
+                              Share a link for this date only. Creating a new
+                              link replaces the previous one. It expires the day
+                              after the performance, or the day after creation
+                              for past bookings.
+                            </p>
+                            <label>
+                              Staff member’s full name
+                              <input
+                                name="name"
+                                required
+                                minLength={2}
+                                maxLength={100}
+                              />
+                            </label>
+                            <div className="row">
+                              <button disabled={busy}>Copy staff link</button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={busy}
+                                onClick={() =>
+                                  void act("revokeStaff", undefined, {
+                                    day: selectedDate,
+                                  })
+                                }
+                              >
+                                Revoke staff link
+                              </button>
+                            </div>
+                          </form>
+                        </details>
+                      )}
                     </>
                   ) : (
                     <div className="night-view">
@@ -1410,26 +1521,12 @@ export default function Bookings({
                                       Requests: {booking.performance.requests}
                                     </p>
                                   )}
-                                  <p
-                                    className={
-                                      missing
-                                        ? "night-registration missing"
-                                        : "night-registration"
-                                    }
-                                  >
-                                    {missing
-                                      ? `${missing} ${missing === 1 ? "registration" : "registrations"} missing`
-                                      : "Registration complete"}
-                                  </p>
                                   {booking.sourceError && (
                                     <p className="fine">
                                       Booking details need attention. Contact
                                       the manager.
                                     </p>
                                   )}
-                                  <p className="fine night-contract-status">
-                                    {booking.workflow.label}
-                                  </p>
                                   <label className="check night-confirm">
                                     <input
                                       type="checkbox"

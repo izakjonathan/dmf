@@ -494,25 +494,28 @@ export default function Dashboard() {
     data.payments
       .filter((p) => p.paidOn.startsWith(prefix))
       .reduce((sum, p) => sum + net(p), 0);
+  const signOut = (
+    <button
+      className="secondary"
+      disabled={busy}
+      onClick={async () => {
+        setActionsOpen(false);
+        setSigningUrl("");
+        setEmailCheck(undefined);
+        go("Overview");
+        await request("/api/session", { action: "logout" });
+        await start();
+      }}
+    >
+      Sign out
+    </button>
+  );
   return (
     <div className="shell">
       <ViewportTheme />
       <header className="workspace-header">
         <h1>{page === "Overview" ? "Musician payments" : page}</h1>
-        <button
-          className="secondary"
-          disabled={busy}
-          onClick={async () => {
-            setActionsOpen(false);
-            setSigningUrl("");
-            setEmailCheck(undefined);
-            go("Overview");
-            await request("/api/session", { action: "logout" });
-            await start();
-          }}
-        >
-          Sign out
-        </button>
+        {page !== "Bookings" && signOut}
         <div className="workspace-menu-wrap">
           <button
             className="workspace-menu-toggle"
@@ -554,6 +557,7 @@ export default function Dashboard() {
                   </button>
                 ))}
               </details>
+              {page === "Bookings" && signOut}
             </nav>
           </div>
         </div>
