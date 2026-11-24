@@ -958,6 +958,22 @@ test("sheet approval guard rejects live row changes, reordered columns and dupli
       ...context,
     });
   assert.equal(matches(), true);
+  const aliases = [
+    [8, "Entré %"],
+    [14, "Facebook Event"],
+    [15, "Hjemmeside Post"],
+    [16, "Vinter Jazz Post"],
+    [17, "Instagram Post"],
+  ] as const;
+  for (const [index, label] of aliases) context.header[index] = label;
+  assert.equal(matches(), true);
+  [context.header[14], context.header[15]] = [
+    context.header[15], context.header[14],
+  ];
+  assert.equal(matches(), false);
+  [context.header[14], context.header[15]] = [
+    context.header[15], context.header[14],
+  ];
   row[4] = 200;
   assert.equal(matches(), true);
   row[18] = 123;
