@@ -599,7 +599,8 @@ function sheetBookingMatches(book,state,id) {
   const modern = modernBookingSheet(sheet);
   const headers = modern ? BOOKING_OPERATIONS_HEADERS : BOOKING_HEADERS;
   const actual = sheet.getRange(1,1,1,headers.length).getValues()[0];
-  if (actual.length!==headers.length || !actual.every((value,i)=>value===headers[i])) return false;
+  if (actual.length!==headers.length || !actual.every((value,i)=>
+    value===headers[i] || (modern && typeof value==="string" && value===BOOKING_OPERATIONS_HEADER_ALIASES[headers[i]]))) return false;
   const rows = sheet.getRange(2,1,sheet.getLastRow()-1,headers.length).getValues()
     .map(row=>bookingInputRow(row,modern)).filter(row=>String(row[8] || "").trim()===id);
   if (rows.length!==1 || !["yes","no","true","false","cancelled"].includes(String(rows[0][7] || "No").trim().toLowerCase())) return false;
@@ -669,6 +670,13 @@ function appendStagebookBooking(book,sheet,data) {
 }
 
 const BOOKING_OPERATIONS_HEADERS = ["Dato","Payment complete","Bandnavn","Billet pris","Entre  indtægt","Honorar  udgifter","Antal musikere","Antal Gæster","Døren udgør % betaling","Mail","Telefon","Ansvarlig Booker","Info sendt","PR Modtaget","Offentliggjort på Facebook","Offentliggjort på hjemmeside","Offentliggjort på Vinter Jazz","Offentliggjort på Instagram","Fee per musician DKK","Payment type","Payment due","Cancelled","Booking ID","Status","Registration link","Registration progress","Email status","Issue"];
+const BOOKING_OPERATIONS_HEADER_ALIASES = {
+  "Døren udgør % betaling": "Entré %",
+  "Offentliggjort på Facebook": "Facebook Event",
+  "Offentliggjort på hjemmeside": "Hjemmeside Post",
+  "Offentliggjort på Vinter Jazz": "Vinter Jazz Post",
+  "Offentliggjort på Instagram": "Instagram Post"
+};
 function modernBookingSheet(sheet) { return sheet.getRange("A1").getValue() === "Dato"; }
 function bookingRowFromLegacy(row) {
   const next = Array(28).fill("");
